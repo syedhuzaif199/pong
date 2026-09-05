@@ -1,12 +1,18 @@
-All WAV files in this directory were generated specifically for this sample project.
-They contain no third-party samples and may be used, modified, and redistributed with the project.
+IPv6 UDP Pong audio assets
+==========================
 
-pong_loop.wav      - procedural background loop
-paddle_hit.wav     - paddle impact
-wall_hit.wav       - wall bounce
-score.wav          - point scored
-countdown.wav      - 3/2/1 tick
-go.wav             - GO cue
-menu_click.wav     - UI click
-win.wav            - local match win
-lose.wav           - local match loss
+Music supplied for v10:
+- pong_menu_loop.wav      menu/setup/lobby/game-over loop
+- pong_gameplay_loop.wav  active-match loop, started when the countdown reaches GO
+
+The music files are stereo 44.1 kHz, 24-bit PCM WAV loops and are bundled unchanged.
+
+Original synthesized SFX bundled with the project:
+- paddle_hit.wav
+- wall_hit.wav
+- score.wav
+- countdown.wav
+- go.wav
+- menu_click.wav
+- win.wav
+- lose.wav

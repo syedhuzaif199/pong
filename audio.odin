@@ -2,6 +2,26 @@ package main
 
 import rl "vendor:raylib"
 
+Music_Mode :: enum {
+    Silent,
+    Menu,
+    Gameplay,
+}
+
+Music_System :: struct {
+    menu:     rl.Music,
+    gameplay: rl.Music,
+
+    menu_ready:     bool,
+    gameplay_ready: bool,
+    menu_playing:     bool,
+    gameplay_playing: bool,
+
+    menu_gain:     f32,
+    gameplay_gain: f32,
+    mode: Music_Mode,
+}
+
 Audio_System :: struct {
     paddle_hit: rl.Sound,
     wall_hit:   rl.Sound,
@@ -12,6 +32,116 @@ Audio_System :: struct {
     win:        rl.Sound,
     lose:       rl.Sound,
     ready:      bool,
+}
+
+music_load :: proc(music: ^Music_System) {
+    music.menu = rl.LoadMusicStream("assets/pong_menu_loop.wav")
+    music.gameplay = rl.LoadMusicStream("assets/pong_gameplay_loop.wav")
+    music.menu_ready = rl.IsMusicValid(music.menu)
+    music.gameplay_ready = rl.IsMusicValid(music.gameplay)
+
+    if music.menu_ready {
+        music.menu.looping = true
+    }
+    if music.gameplay_ready {
+        music.gameplay.looping = true
+    }
+
+    music.mode = .Silent
+    music_set_mode(music, .Menu)
+}
+
+music_unload :: proc(music: ^Music_System) {
+    if music.menu_ready {
+        rl.StopMusicStream(music.menu)
+        rl.UnloadMusicStream(music.menu)
+    }
+    if music.gameplay_ready {
+        rl.StopMusicStream(music.gameplay)
+        rl.UnloadMusicStream(music.gameplay)
+    }
+    music^ = Music_System{}
+}
+
+music_set_mode :: proc(music: ^Music_System, mode: Music_Mode) {
+    if music.mode == mode { return }
+    music.mode = mode
+
+    #partial switch mode {
+    case .Menu:
+        if music.menu_ready && !music.menu_playing {
+            // PlayMusicStream after StopMusicStream restarts the loop from its beginning.
+            rl.StopMusicStream(music.menu)
+            rl.PlayMusicStream(music.menu)
+            music.menu_playing = true
+            music.menu_gain = 0
+        }
+    case .Gameplay:
+        if music.gameplay_ready && !music.gameplay_playing {
+            // Every match begins at the start of the gameplay track.
+            rl.StopMusicStream(music.gameplay)
+            rl.PlayMusicStream(music.gameplay)
+            music.gameplay_playing = true
+            music.gameplay_gain = 0
+        }
+    case .Silent:
+    }
+}
+
+approach_f32 :: proc(value, target, amount: f32) -> f32 {
+    if value < target {
+        return min(target, value + amount)
+    }
+    if value > target {
+        return max(target, value - amount)
+    }
+    return value
+}
+
+music_update :: proc(music: ^Music_System, settings: App_Settings, dt: f32) {
+    menu_target: f32 = 0
+    gameplay_target: f32 = 0
+    #partial switch music.mode {
+    case .Menu:
+        menu_target = 1
+    case .Gameplay:
+        gameplay_target = 1
+    case .Silent:
+    }
+
+    // Menu music fades out quickly before the synchronized countdown.
+    menu_speed: f32 = 2.5
+    if menu_target < music.menu_gain { menu_speed = 4.5 }
+
+    // Gameplay enters briskly at GO, but leaves more gently at game over/exit.
+    gameplay_speed: f32 = 3.0
+    if gameplay_target > music.gameplay_gain { gameplay_speed = 6.0 }
+
+    music.menu_gain = approach_f32(music.menu_gain, menu_target, menu_speed * dt)
+    music.gameplay_gain = approach_f32(music.gameplay_gain, gameplay_target, gameplay_speed * dt)
+
+    master := f32(settings.music_volume) / 100.0
+    if settings.music_muted { master = 0 }
+
+    if music.menu_playing {
+        rl.SetMusicVolume(music.menu, master * music.menu_gain)
+        rl.UpdateMusicStream(music.menu)
+        if menu_target == 0 && music.menu_gain <= 0.001 {
+            rl.StopMusicStream(music.menu)
+            music.menu_playing = false
+            music.menu_gain = 0
+        }
+    }
+
+    if music.gameplay_playing {
+        rl.SetMusicVolume(music.gameplay, master * music.gameplay_gain)
+        rl.UpdateMusicStream(music.gameplay)
+        if gameplay_target == 0 && music.gameplay_gain <= 0.001 {
+            rl.StopMusicStream(music.gameplay)
+            music.gameplay_playing = false
+            music.gameplay_gain = 0
+        }
+    }
 }
 
 audio_load_sfx :: proc(audio: ^Audio_System) {

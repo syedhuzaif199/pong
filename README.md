@@ -1,28 +1,34 @@
-# IPv6 UDP Pong — Odin + raylib (v9)
+# IPv6 UDP Pong — Odin + raylib (v10)
 
-A small two-player Pong game written in Odin with raylib. Gameplay is host-authoritative IPv6/UDP. v9 is the release/distribution milestone: it keeps the v8 networking/gameplay behavior while making the project portable to run and easy to build for Windows, Linux, and Apple Silicon macOS.
+A small two-player Pong game written in Odin with raylib. Gameplay is host-authoritative IPv6/UDP. v10 builds on the v9 release/distribution foundation and adds separate menu and gameplay music with synchronized match-start transitions.
 
-> **Gameplay protocol v4 / discovery protocol v1:** v9 remains directly network-compatible with v6-v8. No gameplay packet format changed in this release.
+> **Gameplay protocol v4 / discovery protocol v1:** v10 remains directly network-compatible with v6-v9. No gameplay or discovery packet format changed in this release.
 
-## What's new in v9
+## What's new in v10
 
-### Portable runtime layout
+### Separate menu and gameplay music
 
-The game now resolves its bundled assets relative to the executable instead of assuming it was started from the source directory. Release archives can therefore be launched from Explorer, Finder, a terminal in another directory, or a desktop shortcut.
+v10 bundles two independent looping music streams:
 
-For `odin run .`, the game falls back to the original working directory if Odin's temporary executable directory does not contain `assets/`.
+- `assets/pong_menu_loop.wav` — main menu, online/setup screens, lobby, and game-over/rematch waiting
+- `assets/pong_gameplay_loop.wav` — active gameplay only
 
-### Proper per-user configuration path
+Both uploaded WAV files are bundled unchanged so their supplied musical boundaries and loop crossfades are preserved.
 
-`pong.cfg` is now written to a user configuration directory rather than beside the executable:
+### Match-start audio timing
 
-- Windows: `%APPDATA%/IPv6UDPPong/pong.cfg`
-- Linux: `$XDG_CONFIG_HOME/IPv6UDPPong/pong.cfg`, or `~/.config/IPv6UDPPong/pong.cfg`
-- macOS: `~/Library/Application Support/IPv6UDPPong/pong.cfg`
+When both players become ready:
 
-If v9 cannot find the new config file, it still reads an old local `pong.cfg` from v8 or earlier as a migration fallback. The next save writes it to the new location.
+1. the host remains in the lobby for a short pre-countdown transition,
+2. menu music quickly fades to silence on both peers,
+3. the authoritative synchronized `3 → 2 → 1 → GO!` countdown begins,
+4. gameplay music restarts from its beginning on `GO!`.
 
-### Release builds
+The same sequence is used for mutually accepted rematches. Gameplay music fades out at game over and the menu loop returns while the players decide whether to rematch.
+
+### v9 distribution foundation retained
+
+The portable runtime layout, per-user `pong.cfg`, release scripts, GitHub Actions workflow, Windows GUI subsystem build, Linux archive, and native Apple Silicon `Pong.app` packaging remain in place.
 
 Local release helpers:
 
@@ -36,29 +42,15 @@ or on Windows:
 build-release.bat
 ```
 
-Release builds use Odin's speed optimization. Windows release builds also use `-subsystem:windows` so an extra console window does not appear when the game is double-clicked.
-
 The packager creates:
 
 ```text
-pong-v9.0.0-windows-x64.zip
-pong-v9.0.0-linux-x64.tar.gz
-pong-v9.0.0-macos-arm64.zip
+pong-v10.0.0-windows-x64.zip
+pong-v10.0.0-linux-x64.tar.gz
+pong-v10.0.0-macos-arm64.zip
 ```
 
-The macOS archive contains a minimal `Pong.app` bundle with the executable and audio assets inside it.
-
-### GitHub Actions
-
-`.github/workflows/release.yml` builds all three platforms using Odin `dev-2026-09`:
-
-- Windows x64 — `windows-latest`
-- Linux x64 — `ubuntu-24.04`
-- macOS arm64 — `macos-15`
-
-A manual workflow run produces downloadable Actions artifacts. Pushing a version tag such as `v9.0.0` additionally creates a GitHub Release and uploads all three archives.
-
-See `RELEASE.md` for the release procedure.
+The workflow remains pinned to Odin `dev-2026-09`.
 
 ## Existing features
 
@@ -70,7 +62,7 @@ See `RELEASE.md` for the release procedure.
 - mutual rematch negotiation
 - RTT/ping, inferred gameplay packet loss, UDP counters and timeout diagnostics
 - local pause/settings overlay that does not pause the remote match
-- music + persistent volume/mute
+- separate menu/gameplay music + persistent master volume/mute
 - SFX + persistent volume/mute
 - fullscreen/windowed mode and Alt+Enter
 - fixed 960x540 logical canvas with scaling/letterboxing
@@ -145,7 +137,7 @@ A normal stateful firewall may not require all source-port rules.
 
 ## Internet play
 
-Internet play currently uses direct IPv6. v9 does not yet implement STUN, ICE, UDP hole punching, TURN/relay fallback, or invite-code rendezvous. Those can be layered on later without replacing the existing direct IPv6 transport.
+Internet play currently uses direct IPv6. v10 does not yet implement STUN, ICE, UDP hole punching, TURN/relay fallback, or invite-code rendezvous. Those can be layered on later without replacing the existing direct IPv6 transport.
 
 ## Release caveats
 

@@ -1,6 +1,6 @@
 # Releasing Pong
 
-v9 adds a reproducible three-platform release pipeline.
+v10 retains the reproducible three-platform release pipeline introduced in v9.
 
 ## Toolchain
 
@@ -35,17 +35,26 @@ The workflow can be launched manually from the Actions tab. A manual run builds 
 To publish a release, update `VERSION` and `APP_VERSION`, commit the changes, then create and push a version tag:
 
 ```bash
-git tag v9.0.0
-git push origin v9.0.0
+git tag v10.0.0
+git push origin v10.0.0
 ```
 
 The tag run builds:
 
-- `pong-v9.0.0-windows-x64.zip`
-- `pong-v9.0.0-linux-x64.tar.gz`
-- `pong-v9.0.0-macos-arm64.zip`
+- `pong-v10.0.0-windows-x64.zip`
+- `pong-v10.0.0-linux-x64.tar.gz`
+- `pong-v10.0.0-macos-arm64.zip`
 
 and creates a GitHub Release containing those archives.
+
+## Audio assets
+
+The release archives include both v10 music loops under `assets/`:
+
+- `pong_menu_loop.wav`
+- `pong_gameplay_loop.wav`
+
+The packager copies them unchanged on all platforms.
 
 ## macOS
 

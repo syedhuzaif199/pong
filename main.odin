@@ -6,7 +6,8 @@ import "core:os"
 import "core:strconv"
 import rl "vendor:raylib"
 
-APP_VERSION :: "v9.0.0"
+APP_VERSION :: "v10.0.0"
+PRE_COUNTDOWN_FADE_TIME :: f32(0.40)
 
 Screen :: enum {
     Main_Menu,
@@ -45,8 +46,7 @@ App :: struct {
     render_game: Game_State,
     target_game: Game_State,
 
-    music: rl.Music,
-    music_ready: bool,
+    music: Music_System,
     audio: Audio_System,
     fx: Visual_FX,
 
@@ -54,6 +54,9 @@ App :: struct {
     pause_settings: bool,
     countdown_sound_stage: int,
     transition_alpha: f32,
+
+    match_start_pending: bool,
+    match_start_timer: f32,
 
     display_change_pending: bool,
 }
@@ -114,15 +117,7 @@ main :: proc() {
     audio_ready := rl.IsAudioDeviceReady()
     if audio_ready {
         audio_load_sfx(&app.audio)
-        app.music = rl.LoadMusicStream("assets/pong_loop.wav")
-        app.music_ready = rl.IsMusicValid(app.music)
-        if app.music_ready {
-            app.music.looping = true
-            music_volume := f32(app.preferences.music_volume) / 100.0
-            if app.preferences.music_muted { music_volume = 0 }
-            rl.SetMusicVolume(app.music, music_volume)
-            rl.PlayMusicStream(app.music)
-        }
+        music_load(&app.music)
     }
 
     canvas := rl.LoadRenderTexture(WINDOW_W, WINDOW_H)
@@ -135,11 +130,9 @@ main :: proc() {
         update_app(&app, dt)
         if app.screen != frame_screen { app.transition_alpha = 1 }
 
-        if app.music_ready {
-            music_volume := f32(app.preferences.music_volume) / 100.0
-            if app.preferences.music_muted { music_volume = 0 }
-            rl.SetMusicVolume(app.music, music_volume)
-            rl.UpdateMusicStream(app.music)
+        if audio_ready {
+            update_music_mode(&app)
+            music_update(&app.music, app.preferences, dt)
         }
 
         rl.BeginTextureMode(canvas)
@@ -164,13 +157,42 @@ main :: proc() {
     net_shutdown(&app.net)
     rl.UnloadRenderTexture(canvas)
 
-    if app.music_ready {
-        rl.UnloadMusicStream(app.music)
-    }
     if audio_ready {
+        music_unload(&app.music)
         audio_unload_sfx(&app.audio)
         rl.CloseAudioDevice()
     }
+}
+
+
+begin_match_start_fade :: proc(app: ^App) {
+    if app.match_start_pending { return }
+    app.match_start_pending = true
+    app.match_start_timer = PRE_COUNTDOWN_FADE_TIME
+}
+
+cancel_match_start_fade :: proc(app: ^App) {
+    app.match_start_pending = false
+    app.match_start_timer = 0
+}
+
+update_music_mode :: proc(app: ^App) {
+    mode: Music_Mode = .Menu
+
+    if app.match_start_pending &&
+       (app.screen == .Lobby || (app.screen == .Game && app.render_game.game_over)) {
+        mode = .Silent
+    } else if app.screen == .Game {
+        if app.render_game.countdown_timer > 0 {
+            mode = .Silent
+        } else if app.render_game.game_over {
+            mode = .Menu
+        } else {
+            mode = .Gameplay
+        }
+    }
+
+    music_set_mode(&app.music, mode)
 }
 
 update_app :: proc(app: ^App, dt: f32) {
@@ -207,7 +229,7 @@ update_app :: proc(app: ^App, dt: f32) {
         update_join_setup(app)
 
     case .Lobby:
-        update_lobby(app)
+        update_lobby(app, dt)
 
     case .Settings:
         text_field_update(&app.preferences.player_name, allow_player_name_char)
@@ -320,8 +342,9 @@ update_join_setup :: proc(app: ^App) {
     }
 }
 
-update_lobby :: proc(app: ^App) {
+update_lobby :: proc(app: ^App, dt: f32) {
     if rl.IsKeyPressed(.ESCAPE) {
+        cancel_match_start_fade(app)
         net_shutdown(&app.net)
         app.online_status = .Idle
         app.status_message = ""
@@ -333,6 +356,7 @@ update_lobby :: proc(app: ^App) {
     case .Host:
         _, _ = net_receive_host(&app.net, app.network_rules, &app.game)
         if app.net.peer_left {
+            cancel_match_start_fade(app)
             net_shutdown(&app.net, false)
             app.online_status = .Error
             app.status_message = "Player left the lobby."
@@ -340,6 +364,7 @@ update_lobby :: proc(app: ^App) {
             return
         }
         if !app.net.connected || connection_timed_out(&app.net) {
+            cancel_match_start_fade(app)
             net_shutdown(&app.net, false)
             app.online_status = .Error
             app.status_message = "Player timed out in the lobby."
@@ -351,21 +376,34 @@ update_lobby :: proc(app: ^App) {
         net_send_lobby_if_due(&app.net)
 
         if both_players_ready(&app.net) {
-            clear_ready_state(&app.net)
-            clear_rematch_state(&app.net)
-            begin_match_countdown(&app.game)
-            app.render_game = app.game
-            app.target_game = app.game
-            send_state(&app.net, app.game)
-            app.paused = false
-            app.pause_settings = false
-            app.countdown_sound_stage = 0
-            app.screen = .Game
+            if !app.match_start_pending {
+                // Send one explicit both-ready state so the client begins fading too.
+                send_lobby_state(&app.net)
+                begin_match_start_fade(app)
+            }
+
+            app.match_start_timer -= dt
+            if app.match_start_timer <= 0 {
+                cancel_match_start_fade(app)
+                clear_ready_state(&app.net)
+                clear_rematch_state(&app.net)
+                begin_match_countdown(&app.game)
+                app.render_game = app.game
+                app.target_game = app.game
+                send_state(&app.net, app.game)
+                app.paused = false
+                app.pause_settings = false
+                app.countdown_sound_stage = 0
+                app.screen = .Game
+            }
+        } else {
+            cancel_match_start_fade(app)
         }
 
     case .Client:
         _, _, got_state := net_receive_client(&app.net, &app.network_rules, &app.target_game)
         if got_state {
+            cancel_match_start_fade(app)
             clear_ready_state(&app.net)
             app.render_game = app.target_game
             app.paused = false
@@ -375,6 +413,7 @@ update_lobby :: proc(app: ^App) {
             return
         }
         if app.net.peer_left {
+            cancel_match_start_fade(app)
             net_shutdown(&app.net, false)
             app.online_status = .Error
             app.status_message = "Host closed the lobby."
@@ -382,6 +421,7 @@ update_lobby :: proc(app: ^App) {
             return
         }
         if !app.net.connected || connection_timed_out(&app.net) {
+            cancel_match_start_fade(app)
             net_shutdown(&app.net, false)
             app.online_status = .Error
             app.status_message = "Connection to host timed out in the lobby."
@@ -391,6 +431,12 @@ update_lobby :: proc(app: ^App) {
 
         net_send_ping_if_due(&app.net)
         net_send_lobby_if_due(&app.net)
+
+        if both_players_ready(&app.net) {
+            begin_match_start_fade(app)
+        } else {
+            cancel_match_start_fade(app)
+        }
     case:
     }
 }
@@ -418,6 +464,7 @@ update_game :: proc(app: ^App, dt: f32) {
             net_shutdown(&app.net, false)
             app.online_status = .Error
             app.status_message = "Opponent left the game."
+            cancel_match_start_fade(app)
             app.paused = false
             app.pause_settings = false
             app.screen = .Host_Setup
@@ -427,6 +474,7 @@ update_game :: proc(app: ^App, dt: f32) {
             net_shutdown(&app.net, false)
             app.online_status = .Error
             app.status_message = "Opponent timed out."
+            cancel_match_start_fade(app)
             app.paused = false
             app.pause_settings = false
             app.screen = .Host_Setup
@@ -439,17 +487,32 @@ update_game :: proc(app: ^App, dt: f32) {
             net_send_rematch_if_due(&app.net)
             alt_down := rl.IsKeyDown(.LEFT_ALT) || rl.IsKeyDown(.RIGHT_ALT)
             if !app.paused && rl.IsKeyPressed(.ENTER) && !alt_down { net_request_rematch(&app.net) }
+
             if both_players_want_rematch(&app.net) {
-                clear_rematch_state(&app.net)
-                send_rematch_state(&app.net)
-                begin_match_countdown(&app.game)
-                app.render_game = app.game
-                app.paused = false
-                app.pause_settings = false
-                app.countdown_sound_stage = 0
-                send_state(&app.net, app.game)
+                if !app.match_start_pending {
+                    // Keep the game-over/menu track audible until both players agree,
+                    // then fade it before the next countdown begins.
+                    send_rematch_state(&app.net)
+                    begin_match_start_fade(app)
+                }
+
+                app.match_start_timer -= dt
+                if app.match_start_timer <= 0 {
+                    cancel_match_start_fade(app)
+                    clear_rematch_state(&app.net)
+                    send_rematch_state(&app.net)
+                    begin_match_countdown(&app.game)
+                    app.render_game = app.game
+                    app.paused = false
+                    app.pause_settings = false
+                    app.countdown_sound_stage = 0
+                    send_state(&app.net, app.game)
+                }
+            } else {
+                cancel_match_start_fade(app)
             }
         } else {
+            cancel_match_start_fade(app)
             step_host_game(&app.game, app.network_rules, direction, app.net.remote_input, dt)
             host_send_state_if_due(&app.net, app.game)
         }
@@ -465,6 +528,7 @@ update_game :: proc(app: ^App, dt: f32) {
         if got_state {
             process_game_events(app, before, app.target_game)
             if before.game_over && !app.target_game.game_over && app.target_game.countdown_timer > 0 {
+                cancel_match_start_fade(app)
                 app.paused = false
                 app.pause_settings = false
                 app.countdown_sound_stage = 0
@@ -475,6 +539,7 @@ update_game :: proc(app: ^App, dt: f32) {
             net_shutdown(&app.net, false)
             app.online_status = .Error
             app.status_message = "Opponent left the game."
+            cancel_match_start_fade(app)
             app.paused = false
             app.pause_settings = false
             app.screen = .Join_Setup
@@ -484,6 +549,7 @@ update_game :: proc(app: ^App, dt: f32) {
             net_shutdown(&app.net, false)
             app.online_status = .Error
             app.status_message = "Host timed out."
+            cancel_match_start_fade(app)
             app.paused = false
             app.pause_settings = false
             app.screen = .Join_Setup
@@ -501,6 +567,14 @@ update_game :: proc(app: ^App, dt: f32) {
             net_send_rematch_if_due(&app.net)
             alt_down := rl.IsKeyDown(.LEFT_ALT) || rl.IsKeyDown(.RIGHT_ALT)
             if !app.paused && rl.IsKeyPressed(.ENTER) && !alt_down { net_request_rematch(&app.net) }
+
+            if both_players_want_rematch(&app.net) {
+                begin_match_start_fade(app)
+            } else {
+                cancel_match_start_fade(app)
+            }
+        } else {
+            cancel_match_start_fade(app)
         }
     case:
     }
@@ -875,7 +949,7 @@ draw_lobby :: proc(app: ^App) {
 
     ready_label := "READY UP"
     if app.net.local_ready { ready_label = "UNREADY" }
-    if button(ready_label, rl.Rectangle{330, 356, 300, 56}) {
+    if button(ready_label, rl.Rectangle{330, 356, 300, 56}, !app.match_start_pending) {
         net_set_local_ready(&app.net, !app.net.local_ready)
     }
 
@@ -888,6 +962,7 @@ draw_lobby :: proc(app: ^App) {
     }
 
     if button("LEAVE LOBBY", rl.Rectangle{360, 470, 240, 46}) {
+        cancel_match_start_fade(app)
         net_shutdown(&app.net)
         app.online_status = .Idle
         app.status_message = ""
@@ -904,6 +979,7 @@ parse_port_field :: proc(app: ^App) -> (int, bool) {
 }
 
 start_hosting :: proc(app: ^App) {
+    cancel_match_start_fade(app)
     port, ok := parse_port_field(app)
     if !ok {
         app.online_status = .Error
@@ -928,6 +1004,7 @@ start_hosting :: proc(app: ^App) {
 }
 
 start_joining :: proc(app: ^App) {
+    cancel_match_start_fade(app)
     port, ok := parse_port_field(app)
     if !ok {
         app.online_status = .Error
@@ -1135,6 +1212,7 @@ update_countdown_sfx :: proc(app: ^App, g: ^Game_State) {
 }
 
 leave_current_match :: proc(app: ^App) {
+    cancel_match_start_fade(app)
     net_shutdown(&app.net)
     app.online_status = .Idle
     app.status_message = ""
