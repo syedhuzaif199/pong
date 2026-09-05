@@ -727,6 +727,13 @@ draw_join_setup :: proc(app: ^App) {
         }
     }
 
+    if app.discovery_client.local_ipv4_length > 0 {
+        local_ip4 := string(app.discovery_client.local_ipv4[:app.discovery_client.local_ipv4_length])
+        route_buf: [96]u8
+        route_text := fmt.bprintf(route_buf[:], "LAN search via %s", local_ip4)
+        draw_text(route_text, 92, 257, 12, MUTED)
+    }
+
     draw_text("DIRECT CONNECT", 92, 278, 18, FG)
     draw_text_centered("Use this for Internet play or when LAN discovery is unavailable.", 302, 14, MUTED)
 

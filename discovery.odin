@@ -39,6 +39,8 @@ Discovery_Client :: struct {
     last_query_time: f64,
     query_sent_time: f64,
     query_nonce: u32,
+    local_ipv4: [32]u8,
+    local_ipv4_length: int,
     games: [MAX_DISCOVERED_GAMES]Discovered_Game,
     game_count: int,
 }
@@ -289,12 +291,92 @@ discovery_host_update :: proc(d: ^Discovery_Host) {
     }
 }
 
+is_usable_discovery_ip4 :: proc(addr: net.IP4_Address) -> bool {
+    if addr == net.IP4_Any { return false }
+    if addr[0] == 127 { return false }
+    if addr[0] >= 224 { return false }
+    return true
+}
+
+copy_discovery_local_ip4 :: proc(d: ^Discovery_Client, addr: net.IP4_Address) {
+    text := net.address_to_string(addr)
+    d.local_ipv4_length = min(len(text), len(d.local_ipv4))
+    if d.local_ipv4_length > 0 {
+        copy(d.local_ipv4[:d.local_ipv4_length], transmute([]u8)text[:d.local_ipv4_length])
+    }
+}
+
+// Windows may route a limited broadcast (255.255.255.255) through a virtual
+// adapter when the UDP socket is unbound (WSL/Hyper-V/VPN adapters are common).
+// Pick an active, non-tunnel IPv4 interface with a gateway and bind the
+// discovery socket to that address. This pins the broadcast to the physical
+// LAN interface without needing subnet-mask/prefix information.
+find_preferred_discovery_ip4 :: proc() -> (result: net.IP4_Address, ok: bool) {
+    when ODIN_OS != .Windows {
+        return
+    } else {
+        interfaces, err := net.enumerate_interfaces()
+        if err != nil { return }
+        defer net.destroy_interfaces(interfaces)
+
+        for pass in 0..<3 {
+            for iface in interfaces {
+                if !(.Up in iface.link.state) { continue }
+                if pass < 2 && iface.tunnel_type != .None { continue }
+
+                has_ip4_gateway := false
+                for gateway in iface.gateways {
+                    #partial switch g in gateway {
+                    case net.IP4_Address:
+                        if is_usable_discovery_ip4(g) {
+                            has_ip4_gateway = true
+                            break
+                        }
+                    case:
+                    }
+                }
+                if pass == 0 && !has_ip4_gateway { continue }
+
+                for lease in iface.unicast {
+                    #partial switch address in lease.address {
+                    case net.IP4_Address:
+                        if !is_usable_discovery_ip4(address) { continue }
+                        return address, true
+                    case:
+                    }
+                }
+            }
+        }
+        return
+    }
+}
+
 discovery_client_start :: proc(d: ^Discovery_Client) -> bool {
     discovery_client_shutdown(d)
     d.attempted_start = true
 
-    socket, err := net.make_unbound_udp_socket(.IP4)
-    if err != nil { return false }
+    socket: net.UDP_Socket
+    socket_ok := false
+
+    when ODIN_OS == .Windows {
+        if local_ip4, have_local_ip4 := find_preferred_discovery_ip4(); have_local_ip4 {
+            bound_socket, bind_err := net.make_bound_udp_socket(local_ip4, 0)
+            if bind_err == nil {
+                socket = bound_socket
+                socket_ok = true
+                copy_discovery_local_ip4(d, local_ip4)
+            }
+        }
+    }
+
+    // Fallback for Linux/macOS, or if Windows interface enumeration/binding
+    // fails. This is the v8 behavior and keeps discovery best-effort.
+    if !socket_ok {
+        unbound_socket, err := net.make_unbound_udp_socket(.IP4)
+        if err != nil { return false }
+        socket = unbound_socket
+        socket_ok = true
+    }
 
     if net.set_option(socket, .Broadcast, true) != nil {
         net.close(socket)

@@ -123,7 +123,7 @@ CONNECT
 
 Discovery uses UDP port **37776** and IPv4 broadcast only to find nearby hosts. The actual match still uses IPv6/UDP. A discovery response advertises the host's IPv6 endpoint and gameplay protocol version.
 
-Discovery is best-effort. Guest Wi-Fi isolation, firewalls, VPNs, and multi-adapter routing can prevent it; direct IPv6 connect remains available.
+Discovery is best-effort. Guest Wi-Fi isolation and firewalls can prevent it; direct IPv6 connect remains available. On Windows, Pong binds the discovery client to an active non-tunnel IPv4 interface with a gateway before sending the broadcast. This avoids the common case where `255.255.255.255` is accidentally routed through WSL, Hyper-V, VPN, or another virtual adapter. The Join screen shows the chosen address as `LAN search via ...`.
 
 ## Linux / UFW
 
