@@ -7,6 +7,7 @@ import "core:strconv"
 import "core:strings"
 
 CONFIG_FILE :: "pong.cfg"
+// Keep the v1.0 config directory name so existing user settings migrate seamlessly.
 CONFIG_DIR_NAME :: "IPv6UDPPong"
 
 config_directory :: proc() -> string {
@@ -53,7 +54,7 @@ App_Settings :: struct {
     sfx_muted:       bool,
     fullscreen:      bool,
     show_net_stats:  bool,
-    last_join_ipv6:  Text_Field,
+    last_join_address: Text_Field,
     last_join_port:  int,
 }
 
@@ -68,7 +69,7 @@ default_app_settings :: proc() -> App_Settings {
         last_join_port = 7777,
     }
     text_field_set(&settings.player_name, "Player")
-    text_field_set(&settings.last_join_ipv6, "::1")
+    text_field_set(&settings.last_join_address, "::1")
     return settings
 }
 
@@ -85,7 +86,7 @@ load_config :: proc(settings: ^App_Settings, last_rules: ^Game_Rules) {
     path := config_file_path()
     data, err := os.read_entire_file_from_path(path, context.temp_allocator)
     if err != nil && path != CONFIG_FILE {
-        // v8 and older stored pong.cfg beside the executable. Read that once as
+        // Older builds stored pong.cfg beside the executable. Read that once as
         // a migration fallback; the next save writes to the platform config dir.
         data, err = os.read_entire_file_from_path(CONFIG_FILE, context.temp_allocator)
     }
@@ -141,9 +142,10 @@ load_config :: proc(settings: ^App_Settings, last_rules: ^Game_Rules) {
             if parse_ok {
                 settings.show_net_stats = parsed != 0
             }
-        case "last_join_ipv6":
-            if _, address_ok := net.parse_ip6_address(value); address_ok {
-                text_field_set(&settings.last_join_ipv6, value)
+        case "last_join_ipv6", "last_join_address":
+            // Accept the old v1.0 key as a migration path.
+            if net.parse_address(value) != nil {
+                text_field_set(&settings.last_join_address, value)
             }
         case "last_join_port":
             parsed, parse_ok := strconv.parse_int(value)
@@ -183,14 +185,14 @@ save_config :: proc(settings: App_Settings, last_rules: Game_Rules) {
     name := text_field_string(&player_name)
     if len(name) == 0 { name = "Player" }
 
-    last_join_ipv6_field := settings.last_join_ipv6
-    last_join_ipv6 := text_field_string(&last_join_ipv6_field)
-    if len(last_join_ipv6) == 0 { last_join_ipv6 = "::1" }
+    last_join_address_field := settings.last_join_address
+    last_join_address := text_field_string(&last_join_address_field)
+    if len(last_join_address) == 0 { last_join_address = "::1" }
 
     buf: [1024]u8
     text := fmt.bprintf(
         buf[:],
-        "player_name=%s\nmusic_volume=%d\nmusic_muted=%d\nsfx_volume=%d\nsfx_muted=%d\nfullscreen=%d\nshow_net_stats=%d\nlast_join_ipv6=%s\nlast_join_port=%d\nlast_winning_score=%d\nlast_ball_speed=%.0f\nlast_paddle_speed=%.0f\n",
+        "player_name=%s\nmusic_volume=%d\nmusic_muted=%d\nsfx_volume=%d\nsfx_muted=%d\nfullscreen=%d\nshow_net_stats=%d\nlast_join_address=%s\nlast_join_port=%d\nlast_winning_score=%d\nlast_ball_speed=%.0f\nlast_paddle_speed=%.0f\n",
         name,
         settings.music_volume,
         muted,
@@ -198,7 +200,7 @@ save_config :: proc(settings: App_Settings, last_rules: Game_Rules) {
         sfx_muted,
         fullscreen,
         stats,
-        last_join_ipv6,
+        last_join_address,
         settings.last_join_port,
         last_rules.winning_score,
         last_rules.ball_speed,

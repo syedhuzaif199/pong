@@ -6,8 +6,9 @@ import "core:os"
 import "core:strconv"
 import rl "vendor:raylib"
 
-APP_VERSION :: "v10.0.0"
+APP_VERSION :: "v1.1.0"
 PRE_COUNTDOWN_FADE_TIME :: f32(0.40)
+LAN_IPV4_FALLBACK_DELAY :: f64(0.75)
 
 Screen :: enum {
     Main_Menu,
@@ -34,8 +35,13 @@ App :: struct {
     last_game_rules: Game_Rules,
     network_rules: Game_Rules,
 
-    ipv6: Text_Field,
+    address: Text_Field,
     port: Text_Field,
+
+    lan_fallback_ipv4: [32]u8,
+    lan_fallback_ipv4_length: int,
+    lan_fallback_pending: bool,
+    lan_fallback_used: bool,
     online_status: Online_Status,
     status_message: string,
 
@@ -86,7 +92,7 @@ main :: proc() {
     prepare_runtime_directory()
 
     rl.SetConfigFlags({.VSYNC_HINT, .WINDOW_RESIZABLE})
-    rl.InitWindow(WINDOW_W, WINDOW_H, "IPv6 UDP Pong")
+    rl.InitWindow(WINDOW_W, WINDOW_H, "UDP Pong")
     defer rl.CloseWindow()
     rl.SetWindowMinSize(640, 360)
     rl.SetTargetFPS(120)
@@ -101,7 +107,7 @@ main :: proc() {
     load_config(&app.preferences, &app.last_game_rules)
     app.network_rules = app.last_game_rules
 
-    app.ipv6 = app.preferences.last_join_ipv6
+    app.address = app.preferences.last_join_address
     port_buf: [32]u8
     port_text := fmt.bprintf(port_buf[:], "%d", app.preferences.last_join_port)
     text_field_set(&app.port, port_text)
@@ -286,12 +292,13 @@ update_join_setup :: proc(app: ^App) {
             _ = discovery_client_start(&app.discovery_client)
         }
         discovery_client_update(&app.discovery_client)
-        text_field_update(&app.ipv6, allow_ipv6_char)
+        text_field_update(&app.address, allow_ip_address_char)
         text_field_update(&app.port, allow_port_char)
     }
 
     if rl.IsKeyPressed(.ESCAPE) {
         if controls_disabled {
+            clear_lan_fallback(app)
             net_shutdown(&app.net)
             app.online_status = .Idle
             app.status_message = ""
@@ -313,6 +320,7 @@ update_join_setup :: proc(app: ^App) {
             return
         }
         if got_state {
+            clear_lan_fallback(app)
             discovery_client_shutdown(&app.discovery_client)
             app.render_game = app.target_game
             app.paused = false
@@ -322,18 +330,34 @@ update_join_setup :: proc(app: ^App) {
             return
         }
         if got_lobby {
+            clear_lan_fallback(app)
             discovery_client_shutdown(&app.discovery_client)
             app.screen = .Lobby
             return
         }
 
+        if app.lan_fallback_pending && !app.net.welcomed &&
+           rl.GetTime() - app.net.join_started_time >= LAN_IPV4_FALLBACK_DELAY {
+            fallback := lan_fallback_address(app)
+            app.lan_fallback_pending = false
+            if len(fallback) > 0 {
+                port, port_ok := parse_port_field(app)
+                if port_ok && start_joining_address(app, fallback, port, false) {
+                    app.lan_fallback_used = true
+                    text_field_set(&app.address, fallback)
+                    app.status_message = "IPv6 did not answer; trying IPv4 fallback..."
+                    return
+                }
+            }
+        }
+
         if join_timed_out(&app.net) {
             if app.net.send_errors > 0 {
-                app.status_message = "UDP send failed. Check your network and IPv6 configuration."
+                app.status_message = "UDP send failed. Check your network configuration and firewall."
             } else if app.net.welcomed {
                 app.status_message = "Host replied, but game synchronization timed out."
             } else {
-                app.status_message = "No reply from host. Check IPv6, port, and firewall."
+                app.status_message = "No reply from host. Check the IP address, port, and firewall."
             }
             net_shutdown(&app.net, false)
             app.online_status = .Error
@@ -603,7 +627,7 @@ draw_app :: proc(app: ^App) {
 
 draw_main_menu :: proc(app: ^App) {
     draw_text_centered("PONG", 95, 72, FG)
-    draw_text_centered("IPv6 / UDP", 174, 22, ACCENT)
+    draw_text_centered("IPv4 + IPv6 / UDP", 174, 22, ACCENT)
 
     if button("PLAY ONLINE", rl.Rectangle{330, 245, 300, 58}) {
         app.screen = .Online
@@ -712,7 +736,7 @@ draw_host_setup :: proc(app: ^App) {
         start_hosting(app)
     }
 
-    copy_enabled := controls_disabled && app.discovery_host.ipv6_length > 0
+    copy_enabled := controls_disabled && (app.discovery_host.ipv6_length > 0 || app.discovery_host.ipv4_length > 0)
     if button("COPY INVITE", rl.Rectangle{535, 366, 210, 50}, copy_enabled) {
         copy_host_invite(app)
     }
@@ -721,12 +745,18 @@ draw_host_setup :: proc(app: ^App) {
     case .Hosting:
         draw_text_centered("Waiting for another player...", 430, 18, GOOD)
         if app.discovery_host.socket_open {
-            ipv6 := discovery_host_ipv6(&app.discovery_host)
-            lan_buf: [192]u8
-            lan_text := fmt.bprintf(lan_buf[:], "LAN discovery ON  |  %s:%d", ipv6, app.discovery_host.game_port)
+            lan_buf: [224]u8
+            lan_text := "LAN discovery ON"
+            if app.discovery_host.ipv6_length > 0 {
+                ipv6 := discovery_host_ipv6(&app.discovery_host)
+                lan_text = fmt.bprintf(lan_buf[:], "LAN discovery ON  |  [%s]:%d  |  IPv4 fallback", ipv6, app.discovery_host.game_port)
+            } else if app.discovery_host.ipv4_length > 0 {
+                ipv4 := discovery_host_ipv4(&app.discovery_host)
+                lan_text = fmt.bprintf(lan_buf[:], "LAN discovery ON  |  %s:%d  |  IPv4", ipv4, app.discovery_host.game_port)
+            }
             draw_text_centered(lan_text, 455, 14, MUTED)
         } else {
-            draw_text_centered("LAN discovery unavailable; direct IPv6 joining still works.", 455, 14, MUTED)
+            draw_text_centered("LAN discovery unavailable; direct IP joining may still work.", 455, 14, MUTED)
         }
         if app.status_message != "" {
             draw_text_centered(app.status_message, 477, 14, ACCENT)
@@ -734,7 +764,7 @@ draw_host_setup :: proc(app: ^App) {
     case .Error:
         draw_text_centered(app.status_message, 438, 17, DANGER)
     case:
-        draw_text_centered("Hosting uses IPv6; LAN discovery advertises it over local IPv4 broadcast.", 438, 14, MUTED)
+        draw_text_centered("Hosting accepts IPv4 + IPv6 when available; LAN discovery prefers IPv6 and falls back to IPv4.", 438, 14, MUTED)
     }
 
     back_label := "BACK"
@@ -771,7 +801,7 @@ draw_join_setup :: proc(app: ^App) {
     if visible == 0 {
         message := "Searching your LAN..."
         if app.discovery_client.attempted_start && !app.discovery_client.socket_open {
-            message = "LAN discovery unavailable; use direct IPv6 connect below."
+            message = "LAN discovery unavailable; use direct IP connect below."
         }
         draw_text_centered_in(message, rl.Rectangle{90, 96, 780, 154}, 17, MUTED)
     } else {
@@ -781,11 +811,17 @@ draw_join_setup :: proc(app: ^App) {
             if i > 0 { rl.DrawLine(105, i32(y - 5), 855, i32(y - 5), rl.Color{54, 60, 74, 255}) }
 
             name := discovered_game_name(game)
-            ipv6 := discovered_game_ipv6(game)
             draw_text(name, 108, int(y) + 4, 19, FG)
 
             endpoint_buf: [160]u8
-            endpoint_text := fmt.bprintf(endpoint_buf[:], "[%s]:%d", ipv6, game.game_port)
+            endpoint_text := ""
+            if game.ipv6_length > 0 {
+                ipv6 := discovered_game_ipv6(game)
+                endpoint_text = fmt.bprintf(endpoint_buf[:], "[%s]:%d", ipv6, game.game_port)
+            } else {
+                ipv4 := discovered_game_ipv4(game)
+                endpoint_text = fmt.bprintf(endpoint_buf[:], "%s:%d", ipv4, game.game_port)
+            }
             draw_text(endpoint_text, 292, int(y) + 7, 13, MUTED)
 
             ping_buf: [64]u8
@@ -809,15 +845,15 @@ draw_join_setup :: proc(app: ^App) {
     }
 
     draw_text("DIRECT CONNECT", 92, 278, 18, FG)
-    draw_text_centered("Use this for Internet play or when LAN discovery is unavailable.", 302, 14, MUTED)
+    draw_text_centered("Use IPv4 or IPv6 for Internet play or when LAN discovery is unavailable.", 302, 14, MUTED)
 
-    text_field("IPv6 address", &app.ipv6, rl.Rectangle{120, 344, 510, 46}, !controls_disabled)
+    text_field("IP address", &app.address, rl.Rectangle{120, 344, 510, 46}, !controls_disabled)
     text_field("Port", &app.port, rl.Rectangle{650, 344, 120, 46}, !controls_disabled)
     if button("PASTE INVITE", rl.Rectangle{780, 344, 130, 46}, !controls_disabled) {
         if paste_invite_from_clipboard(app) {
             app.status_message = "Invite pasted."
         } else {
-            app.status_message = "Clipboard does not contain a valid [IPv6]:port invite."
+            app.status_message = "Clipboard does not contain a valid IPv4/IPv6 invite."
         }
     }
 
@@ -829,11 +865,15 @@ draw_join_setup :: proc(app: ^App) {
     case .Joining:
         elapsed := rl.GetTime() - app.net.join_started_time
         status_buf: [192]u8
+        transport := net_transport_name(&app.net)
         if app.net.welcomed {
-            status := fmt.bprintf(status_buf[:], "Host replied; synchronizing... %.1f / %.0f s", elapsed, JOIN_TIMEOUT)
+            status := fmt.bprintf(status_buf[:], "Host replied over %s; synchronizing... %.1f / %.0f s", transport, elapsed, JOIN_TIMEOUT)
+            draw_text_centered(status, 470, 16, GOOD)
+        } else if app.lan_fallback_used {
+            status := fmt.bprintf(status_buf[:], "IPv6 did not answer; trying IPv4... %.1f / %.0f s", elapsed, JOIN_TIMEOUT)
             draw_text_centered(status, 470, 16, GOOD)
         } else {
-            status := fmt.bprintf(status_buf[:], "Contacting host... %.1f / %.0f s", elapsed, JOIN_TIMEOUT)
+            status := fmt.bprintf(status_buf[:], "Contacting host over %s... %.1f / %.0f s", transport, elapsed, JOIN_TIMEOUT)
             draw_text_centered(status, 470, 16, GOOD)
         }
     case .Error:
@@ -842,7 +882,7 @@ draw_join_setup :: proc(app: ^App) {
         if app.status_message != "" {
             draw_text_centered(app.status_message, 470, 14, ACCENT)
         } else {
-            draw_text_centered("Ctrl+V / Cmd+V also pastes a raw IPv6 address into the field.", 470, 14, MUTED)
+            draw_text_centered("LAN joins prefer IPv6 and automatically fall back to IPv4.", 470, 14, MUTED)
         }
     }
 
@@ -850,6 +890,7 @@ draw_join_setup :: proc(app: ^App) {
     if controls_disabled { back_label = "CANCEL" }
     if button(back_label, rl.Rectangle{30, 496, 180, 34}) {
         if controls_disabled {
+            clear_lan_fallback(app)
             net_shutdown(&app.net)
             app.online_status = .Idle
             app.status_message = ""
@@ -860,11 +901,66 @@ draw_join_setup :: proc(app: ^App) {
     }
 }
 
+clear_lan_fallback :: proc(app: ^App) {
+    app.lan_fallback_ipv4_length = 0
+    app.lan_fallback_pending = false
+    app.lan_fallback_used = false
+}
+
+set_lan_fallback :: proc(app: ^App, ipv4: string) {
+    clear_lan_fallback(app)
+    n := min(len(ipv4), len(app.lan_fallback_ipv4))
+    if n > 0 {
+        copy(app.lan_fallback_ipv4[:n], transmute([]u8)ipv4[:n])
+        app.lan_fallback_ipv4_length = n
+        app.lan_fallback_pending = true
+    }
+}
+
+lan_fallback_address :: proc(app: ^App) -> string {
+    return string(app.lan_fallback_ipv4[:app.lan_fallback_ipv4_length])
+}
+
+start_joining_address :: proc(app: ^App, address_text: string, port: int, remember: bool) -> bool {
+    if net.parse_address(address_text) == nil {
+        app.online_status = .Error
+        app.status_message = "That is not a valid IPv4 or IPv6 address."
+        return false
+    }
+
+    if remember {
+        text_field_set(&app.preferences.last_join_address, address_text)
+        app.preferences.last_join_port = port
+        save_config(app.preferences, app.last_game_rules)
+    }
+
+    sanitize_player_name(&app.preferences.player_name)
+    if !net_join(&app.net, address_text, port, text_field_string(&app.preferences.player_name)) {
+        app.online_status = .Error
+        app.status_message = "Could not create the UDP client socket."
+        return false
+    }
+
+    reset_match(&app.target_game)
+    app.render_game = app.target_game
+    app.network_rules = default_game_rules()
+    app.online_status = .Joining
+    app.status_message = ""
+    return true
+}
+
 copy_host_invite :: proc(app: ^App) {
-    if app.discovery_host.ipv6_length <= 0 { return }
-    ipv6 := discovery_host_ipv6(&app.discovery_host)
     buf: [160]u8
-    invite := fmt.bprintf(buf[:], "[%s]:%d", ipv6, app.discovery_host.game_port)
+    invite := ""
+    if app.discovery_host.ipv6_length > 0 {
+        ipv6 := discovery_host_ipv6(&app.discovery_host)
+        invite = fmt.bprintf(buf[:], "[%s]:%d", ipv6, app.discovery_host.game_port)
+    } else if app.discovery_host.ipv4_length > 0 {
+        ipv4 := discovery_host_ipv4(&app.discovery_host)
+        invite = fmt.bprintf(buf[:], "%s:%d", ipv4, app.discovery_host.game_port)
+    } else {
+        return
+    }
     clipboard_set_text(invite)
     app.status_message = "Invite copied to clipboard."
 }
@@ -876,31 +972,52 @@ paste_invite_from_clipboard :: proc(app: ^App) -> bool {
 
     endpoint, ok := net.parse_endpoint(clipboard)
     if ok && endpoint.port >= 1 && endpoint.port <= 65535 {
-        #partial switch address in endpoint.address {
-        case net.IP6_Address:
-            ipv6 := net.address_to_string(address)
-            text_field_set(&app.ipv6, ipv6)
-            port_buf: [32]u8
-            port_text := fmt.bprintf(port_buf[:], "%d", endpoint.port)
-            text_field_set(&app.port, port_text)
-            return true
-        case:
-        }
+        address_text := net.address_to_string(endpoint.address)
+        text_field_set(&app.address, address_text)
+        port_buf: [32]u8
+        port_text := fmt.bprintf(port_buf[:], "%d", endpoint.port)
+        text_field_set(&app.port, port_text)
+        return true
     }
 
-    if _, ipv6_ok := net.parse_ip6_address(clipboard); ipv6_ok {
-        text_field_set(&app.ipv6, clipboard)
+    if net.parse_address(clipboard) != nil {
+        text_field_set(&app.address, clipboard)
         return true
     }
     return false
 }
 
 join_discovered_game :: proc(app: ^App, game: ^Discovered_Game) {
-    text_field_set(&app.ipv6, discovered_game_ipv6(game))
+    clear_lan_fallback(app)
+
+    ipv4 := discovered_game_ipv4(game)
+    ipv6 := discovered_game_ipv6(game)
+    use_ipv6 := false
+    if len(ipv6) > 0 {
+        _, _, local_has_ipv6 := find_advertisable_ipv6()
+        use_ipv6 = local_has_ipv6
+    }
+
+    address := ipv4
+    if use_ipv6 {
+        address = ipv6
+        if len(ipv4) > 0 { set_lan_fallback(app, ipv4) }
+    }
+
+    if len(address) == 0 {
+        app.online_status = .Error
+        app.status_message = "The discovered host did not provide a usable gameplay address."
+        return
+    }
+
+    text_field_set(&app.address, address)
     port_buf: [32]u8
     port_text := fmt.bprintf(port_buf[:], "%d", game.game_port)
     text_field_set(&app.port, port_text)
-    start_joining(app)
+
+    if !start_joining_address(app, address, game.game_port, true) {
+        clear_lan_fallback(app)
+    }
 }
 
 draw_lobby :: proc(app: ^App) {
@@ -918,6 +1035,9 @@ draw_lobby :: proc(app: ^App) {
     }
 
     draw_text_centered("Both players must be ready before the match starts.", 82, 16, MUTED)
+    transport_buf: [96]u8
+    transport_text := fmt.bprintf(transport_buf[:], "Connected over %s / UDP", net_transport_name(&app.net))
+    draw_text_centered(transport_text, 104, 13, MUTED)
 
     rl.DrawRectangleRec(rl.Rectangle{105, 130, 340, 145}, PANEL)
     rl.DrawRectangleLinesEx(rl.Rectangle{105, 130, 340, 145}, 1, ACCENT)
@@ -993,18 +1113,19 @@ start_hosting :: proc(app: ^App) {
     sanitize_player_name(&app.preferences.player_name)
     if !net_host(&app.net, port, text_field_string(&app.preferences.player_name)) {
         app.online_status = .Error
-        app.status_message = "Could not bind the IPv6 UDP socket. Is the port already in use?"
+        app.status_message = "Could not bind the UDP gameplay socket. Is the port already in use?"
         return
     }
 
     reset_match(&app.game)
-    _ = discovery_host_start(&app.discovery_host, port, text_field_string(&app.preferences.player_name))
+    _ = discovery_host_start(&app.discovery_host, port, text_field_string(&app.preferences.player_name), app.net.accepts_ipv6)
     app.online_status = .Hosting
     app.status_message = ""
 }
 
 start_joining :: proc(app: ^App) {
     cancel_match_start_fade(app)
+    clear_lan_fallback(app)
     port, ok := parse_port_field(app)
     if !ok {
         app.online_status = .Error
@@ -1012,30 +1133,8 @@ start_joining :: proc(app: ^App) {
         return
     }
 
-    ipv6_text := text_field_string(&app.ipv6)
-    _, address_ok := net.parse_ip6_address(ipv6_text)
-    if !address_ok {
-        app.online_status = .Error
-        app.status_message = "That is not a valid IPv6 address."
-        return
-    }
-
-    text_field_set(&app.preferences.last_join_ipv6, ipv6_text)
-    app.preferences.last_join_port = port
-    save_config(app.preferences, app.last_game_rules)
-
-    sanitize_player_name(&app.preferences.player_name)
-    if !net_join(&app.net, ipv6_text, port, text_field_string(&app.preferences.player_name)) {
-        app.online_status = .Error
-        app.status_message = "Could not create the IPv6 UDP client socket."
-        return
-    }
-
-    reset_match(&app.target_game)
-    app.render_game = app.target_game
-    app.network_rules = default_game_rules()
-    app.online_status = .Joining
-    app.status_message = ""
+    address_text := text_field_string(&app.address)
+    _ = start_joining_address(app, address_text, port, true)
 }
 
 draw_game_screen :: proc(app: ^App) {
@@ -1086,7 +1185,8 @@ draw_game_screen :: proc(app: ^App) {
         counts_buf: [256]u8
         counts := fmt.bprintf(
             counts_buf[:],
-            "session:%d   UDP sent:%d recv:%d   stream recv:%d lost:%d   errors:%d/%d",
+            "%s UDP   session:%d   sent:%d recv:%d   stream recv:%d lost:%d   errors:%d/%d",
+            net_transport_name(&app.net),
             app.net.session_id,
             app.net.packets_sent,
             app.net.packets_recv,

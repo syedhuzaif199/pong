@@ -24,10 +24,22 @@ Net_Role :: enum {
     Client,
 }
 
+Net_Transport :: enum {
+    Unknown,
+    IPv4,
+    IPv6,
+}
+
 Net_State :: struct {
     role:        Net_Role,
     socket:      net.UDP_Socket,
     socket_open: bool,
+
+    // Hosts prefer one dual-stack IPv6 socket. If the platform cannot create
+    // it, hosting falls back to IPv4-only instead of failing completely.
+    accepts_ipv4: bool,
+    accepts_ipv6: bool,
+    transport: Net_Transport,
 
     peer:        net.Endpoint,
     peer_known:  bool,
@@ -128,11 +140,65 @@ net_shutdown :: proc(n: ^Net_State, send_bye_packet := true) {
     n^ = Net_State{}
 }
 
+is_ipv4_mapped_ip6 :: proc(addr: net.IP6_Address) -> bool {
+    bytes := transmute([16]u8)addr
+    for i in 0..<10 {
+        if bytes[i] != 0 { return false }
+    }
+    return bytes[10] == 0xff && bytes[11] == 0xff
+}
+
+transport_from_address :: proc(address: net.Address) -> Net_Transport {
+    #partial switch a in address {
+    case net.IP4_Address:
+        return .IPv4
+    case net.IP6_Address:
+        if is_ipv4_mapped_ip6(a) { return .IPv4 }
+        return .IPv6
+    case:
+        return .Unknown
+    }
+}
+
+net_transport_name :: proc(n: ^Net_State) -> string {
+    #partial switch n.transport {
+    case .IPv4: return "IPv4"
+    case .IPv6: return "IPv6"
+    case:       return "UDP"
+    }
+}
+
 net_host :: proc(n: ^Net_State, port: int, player_name: string) -> bool {
     net_shutdown(n, false)
 
-    socket, err := net.make_bound_udp_socket(net.IP6_Any, port)
-    if err != nil { return false }
+    // Preferred path: one IPv6 UDP socket in dual-stack mode. IPv4 clients
+    // arrive as IPv4-mapped IPv6 endpoints and can use the same gameplay port.
+    socket, create_err := net.make_unbound_udp_socket(.IP6)
+    dual_stack_ok := false
+    if create_err == nil {
+        if set_udp_dual_stack(socket) {
+            bind_err := net.bind(socket, net.Endpoint{address = net.IP6_Any, port = port})
+            if bind_err == nil {
+                dual_stack_ok = true
+            }
+        }
+        if !dual_stack_ok {
+            net.close(socket)
+        }
+    }
+
+    if dual_stack_ok {
+        n.accepts_ipv4 = true
+        n.accepts_ipv6 = true
+    } else {
+        // IPv6 may be disabled entirely on some machines. LAN play should
+        // still work, so fall back to a native IPv4 socket.
+        ipv4_socket, ipv4_err := net.make_bound_udp_socket(net.IP4_Any, port)
+        if ipv4_err != nil { return false }
+        socket = ipv4_socket
+        n.accepts_ipv4 = true
+        n.accepts_ipv6 = false
+    }
 
     block_err := net.set_blocking(socket, false)
     if block_err != nil {
@@ -154,10 +220,20 @@ net_host :: proc(n: ^Net_State, port: int, player_name: string) -> bool {
 net_join :: proc(n: ^Net_State, address_text: string, port: int, player_name: string) -> bool {
     net_shutdown(n, false)
 
-    ip, ok := net.parse_ip6_address(address_text)
-    if !ok { return false }
+    address := net.parse_address(address_text)
+    if address == nil { return false }
 
-    socket, err := net.make_unbound_udp_socket(.IP6)
+    family: net.Address_Family
+    #partial switch a in address {
+    case net.IP4_Address:
+        family = .IP4
+    case net.IP6_Address:
+        family = .IP6
+    case:
+        return false
+    }
+
+    socket, err := net.make_unbound_udp_socket(family)
     if err != nil { return false }
 
     block_err := net.set_blocking(socket, false)
@@ -169,8 +245,9 @@ net_join :: proc(n: ^Net_State, address_text: string, port: int, player_name: st
     n.role = .Client
     n.socket = socket
     n.socket_open = true
-    n.peer = net.Endpoint{address = ip, port = port}
+    n.peer = net.Endpoint{address = address, port = port}
     n.peer_known = true
+    n.transport = transport_from_address(address)
     n.hello_nonce = new_random_id()
     copy_net_name(&n.local_name, &n.local_name_length, player_name)
     now := rl.GetTime()
@@ -451,11 +528,17 @@ net_receive_host :: proc(n: ^Net_State, rules: Game_Rules, g: ^Game_State) -> (n
             }
             if !version_ok || !nonce_ok || !name_ok || version != PROTOCOL_VERSION { continue }
 
-            if !n.peer_known {
-                n.peer = remote
-                n.peer_known = true
-                n.connected = false
-                n.remote_input = 0
+            // Before READY completes the handshake, allow the same client to
+            // retry from another transport endpoint. This is what makes the
+            // LAN IPv6 -> IPv4 fallback safe even if an earlier HELLO reached
+            // the host but its reply did not reach the client.
+            if !n.connected {
+                if !n.peer_known || !endpoints_equal(remote, n.peer) {
+                    n.peer = remote
+                    n.peer_known = true
+                    n.remote_input = 0
+                }
+                n.transport = transport_from_address(remote.address)
                 copy_net_name(&n.remote_name, &n.remote_name_length, client_name)
             }
 

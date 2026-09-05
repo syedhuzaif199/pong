@@ -16,6 +16,8 @@ Discovered_Game :: struct {
     host_name_length: int,
     ipv6: [64]u8,
     ipv6_length: int,
+    ipv4: [32]u8,
+    ipv4_length: int,
     game_port: int,
     game_protocol: int,
     last_seen: f64,
@@ -30,6 +32,8 @@ Discovery_Host :: struct {
     host_name_length: int,
     ipv6: [64]u8,
     ipv6_length: int,
+    ipv4: [32]u8,
+    ipv4_length: int,
 }
 
 Discovery_Client :: struct {
@@ -57,6 +61,12 @@ copy_discovery_ipv6 :: proc(dst: ^[64]u8, dst_len: ^int, value: string) {
     dst_len^ = n
 }
 
+copy_discovery_ipv4 :: proc(dst: ^[32]u8, dst_len: ^int, value: string) {
+    n := min(len(value), len(dst^))
+    if n > 0 { copy(dst^[:n], transmute([]u8)value[:n]) }
+    dst_len^ = n
+}
+
 discovered_game_name :: proc(game: ^Discovered_Game) -> string {
     if game.host_name_length <= 0 { return "Host" }
     return string(game.host_name[:game.host_name_length])
@@ -66,8 +76,16 @@ discovered_game_ipv6 :: proc(game: ^Discovered_Game) -> string {
     return string(game.ipv6[:game.ipv6_length])
 }
 
+discovered_game_ipv4 :: proc(game: ^Discovered_Game) -> string {
+    return string(game.ipv4[:game.ipv4_length])
+}
+
 discovery_host_ipv6 :: proc(d: ^Discovery_Host) -> string {
     return string(d.ipv6[:d.ipv6_length])
+}
+
+discovery_host_ipv4 :: proc(d: ^Discovery_Host) -> string {
+    return string(d.ipv4[:d.ipv4_length])
 }
 
 is_advertisable_ip6 :: proc(addr: net.IP6_Address) -> bool {
@@ -223,17 +241,31 @@ find_advertisable_ipv6 :: proc() -> (result: [64]u8, result_len: int, ok: bool) 
     }
 }
 
-discovery_host_start :: proc(d: ^Discovery_Host, game_port: int, player_name: string) -> bool {
+discovery_host_start :: proc(
+    d: ^Discovery_Host,
+    game_port: int,
+    player_name: string,
+    gameplay_supports_ipv6: bool,
+) -> bool {
     discovery_host_shutdown(d)
 
-    ipv6, ipv6_len, have_ipv6 := find_advertisable_ipv6()
-    if !have_ipv6 { return false }
+    // Discovery itself is IPv4 and must remain useful on IPv4-only LANs.
+    // IPv6 is optional metadata used as the preferred gameplay endpoint.
+    if gameplay_supports_ipv6 {
+        if ipv6, ipv6_len, have_ipv6 := find_advertisable_ipv6(); have_ipv6 {
+            d.ipv6 = ipv6
+            d.ipv6_length = ipv6_len
+        }
+    }
 
-    // Keep the invite endpoint even if opening the discovery socket fails,
-    // so COPY INVITE still works.
+    if local_ipv4, have_ipv4 := find_preferred_discovery_ip4(); have_ipv4 {
+        ipv4_text := net.address_to_string(local_ipv4)
+        copy_discovery_ipv4(&d.ipv4, &d.ipv4_length, ipv4_text)
+    }
+
+    // Keep any usable invite endpoint even if opening the discovery socket
+    // fails, so COPY INVITE can still work.
     d.game_port = game_port
-    d.ipv6 = ipv6
-    d.ipv6_length = ipv6_len
     copy_discovery_name(&d.host_name, &d.host_name_length, player_name)
 
     socket, err := net.make_bound_udp_socket(net.IP4_Any, DISCOVERY_PORT)
@@ -276,6 +308,7 @@ discovery_host_update :: proc(d: ^Discovery_Host) {
 
         name := string(d.host_name[:d.host_name_length])
         ipv6 := discovery_host_ipv6(d)
+        if len(ipv6) == 0 { ipv6 = "-" }
         reply_buf: [384]u8
         reply := fmt.bprintf(
             reply_buf[:],
@@ -312,8 +345,8 @@ copy_discovery_local_ip4 :: proc(d: ^Discovery_Client, addr: net.IP4_Address) {
 // discovery socket to that address. This pins the broadcast to the physical
 // LAN interface without needing subnet-mask/prefix information.
 find_preferred_discovery_ip4 :: proc() -> (result: net.IP4_Address, ok: bool) {
-    when ODIN_OS != .Windows {
-        return
+    when ODIN_OS == .Linux {
+        return find_preferred_discovery_ip4_linux()
     } else {
         interfaces, err := net.enumerate_interfaces()
         if err != nil { return }
@@ -358,19 +391,23 @@ discovery_client_start :: proc(d: ^Discovery_Client) -> bool {
     socket: net.UDP_Socket
     socket_ok := false
 
+    local_ip4, have_local_ip4 := find_preferred_discovery_ip4()
+    if have_local_ip4 {
+        copy_discovery_local_ip4(d, local_ip4)
+    }
+
     when ODIN_OS == .Windows {
-        if local_ip4, have_local_ip4 := find_preferred_discovery_ip4(); have_local_ip4 {
+        if have_local_ip4 {
             bound_socket, bind_err := net.make_bound_udp_socket(local_ip4, 0)
             if bind_err == nil {
                 socket = bound_socket
                 socket_ok = true
-                copy_discovery_local_ip4(d, local_ip4)
             }
         }
     }
 
     // Fallback for Linux/macOS, or if Windows interface enumeration/binding
-    // fails. This is the v8 behavior and keeps discovery best-effort.
+    // fails. Discovery remains best-effort.
     if !socket_ok {
         unbound_socket, err := net.make_unbound_udp_socket(.IP4)
         if err != nil { return false }
@@ -422,10 +459,10 @@ discovery_send_query_if_due :: proc(d: ^Discovery_Client) {
     }
 }
 
-find_discovered_game :: proc(d: ^Discovery_Client, ipv6: string, port: int) -> int {
+find_discovered_game :: proc(d: ^Discovery_Client, ipv4: string, port: int) -> int {
     for i in 0..<d.game_count {
         game := &d.games[i]
-        if game.game_port == port && discovered_game_ipv6(game) == ipv6 { return i }
+        if game.game_port == port && discovered_game_ipv4(game) == ipv4 { return i }
     }
     return -1
 }
@@ -445,12 +482,28 @@ record_discovered_game :: proc(
     game_protocol: int,
     host_name: string,
     game_port: int,
-    ipv6: string,
+    advertised_ipv6: string,
+    remote: net.Endpoint,
 ) {
     if game_port < 1 || game_port > 65535 { return }
-    if _, ok := net.parse_ip6_address(ipv6); !ok { return }
 
-    index := find_discovered_game(d, ipv6, game_port)
+    ipv4_text := ""
+    #partial switch address in remote.address {
+    case net.IP4_Address:
+        if !is_usable_discovery_ip4(address) { return }
+        ipv4_text = net.address_to_string(address)
+    case:
+        return
+    }
+
+    ipv6_text := ""
+    if advertised_ipv6 != "-" {
+        if _, ok := net.parse_ip6_address(advertised_ipv6); ok {
+            ipv6_text = advertised_ipv6
+        }
+    }
+
+    index := find_discovered_game(d, ipv4_text, game_port)
     if index < 0 {
         if d.game_count < MAX_DISCOVERED_GAMES {
             index = d.game_count
@@ -462,7 +515,8 @@ record_discovered_game :: proc(
 
     game := &d.games[index]
     copy_discovery_name(&game.host_name, &game.host_name_length, host_name)
-    copy_discovery_ipv6(&game.ipv6, &game.ipv6_length, ipv6)
+    copy_discovery_ipv4(&game.ipv4, &game.ipv4_length, ipv4_text)
+    copy_discovery_ipv6(&game.ipv6, &game.ipv6_length, ipv6_text)
     game.game_port = game_port
     game.game_protocol = game_protocol
     game.last_seen = rl.GetTime()
@@ -492,7 +546,7 @@ discovery_client_update :: proc(d: ^Discovery_Client) {
 
     for {
         buffer: [512]u8
-        count, _, err := net.recv_udp(d.socket, buffer[:])
+        count, remote, err := net.recv_udp(d.socket, buffer[:])
         if err == .Would_Block { break }
         if err != nil || count <= 0 { break }
 
@@ -509,7 +563,7 @@ discovery_client_update :: proc(d: ^Discovery_Client) {
         if !dv_ok || !nonce_ok || !gp_ok || !name_ok || !port_ok || !ipv6_ok { continue }
         if discovery_version != DISCOVERY_VERSION { continue }
 
-        record_discovered_game(d, nonce, game_protocol, host_name, game_port, ipv6)
+        record_discovered_game(d, nonce, game_protocol, host_name, game_port, ipv6, remote)
     }
 
     prune_discovered_games(d)

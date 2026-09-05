@@ -1,9 +1,9 @@
-IPv6 UDP Pong audio assets
-==========================
+UDP Pong audio assets
+====================
 
-Music supplied for v10:
-- pong_menu_loop.wav      menu/setup/lobby/game-over loop
-- pong_gameplay_loop.wav  active-match loop, started when the countdown reaches GO
+Music loops:
+- pong_menu_loop.wav       menu/setup/lobby/game-over loop
+- pong_gameplay_loop.wav   active-match loop, started when the countdown reaches GO
 
 The music files are stereo 44.1 kHz, 24-bit PCM WAV loops and are bundled unchanged.
 

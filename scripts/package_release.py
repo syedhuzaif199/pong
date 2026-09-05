@@ -88,7 +88,7 @@ def package_macos(binary: Path, arch: str) -> Path:
 
     plist = {
         "CFBundleName": "Pong",
-        "CFBundleDisplayName": "IPv6 UDP Pong",
+        "CFBundleDisplayName": "UDP Pong",
         "CFBundleExecutable": "pong",
         "CFBundleIdentifier": "game.ipv6udp.pong",
         "CFBundlePackageType": "APPL",

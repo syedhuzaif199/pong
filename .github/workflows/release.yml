@@ -10,7 +10,7 @@ permissions:
   contents: write
 
 env:
-  ODIN_VERSION: dev-2026-09
+  ODIN_VERSION: dev-2026-07
 
 jobs:
   build:

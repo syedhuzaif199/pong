@@ -91,7 +91,7 @@ text_field_update :: proc(field: ^Text_Field, allow: proc(rune) -> bool) {
     }
 }
 
-allow_ipv6_char :: proc(ch: rune) -> bool {
+allow_ip_address_char :: proc(ch: rune) -> bool {
     return (ch >= '0' && ch <= '9') ||
            (ch >= 'a' && ch <= 'f') ||
            (ch >= 'A' && ch <= 'F') ||
