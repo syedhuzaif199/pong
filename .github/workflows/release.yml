@@ -1,0 +1,153 @@
+name: Build release archives
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  ODIN_VERSION: dev-2026-09
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+            platform: windows
+            arch: x64
+          - name: Linux x64
+            os: ubuntu-24.04
+            platform: linux
+            arch: x64
+          - name: macOS arm64
+            os: macos-15
+            platform: macos
+            arch: arm64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Odin (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $asset = "odin-windows-amd64-$env:ODIN_VERSION.zip"
+          $url = "https://github.com/odin-lang/Odin/releases/download/$env:ODIN_VERSION/$asset"
+          $archive = Join-Path $env:RUNNER_TEMP $asset
+          $dest = Join-Path $env:RUNNER_TEMP "odin"
+          Invoke-WebRequest -Uri $url -OutFile $archive
+          Expand-Archive -Path $archive -DestinationPath $dest -Force
+          $odin = Get-ChildItem -Path $dest -Filter odin.exe -Recurse | Select-Object -First 1
+          if (-not $odin) { throw "odin.exe was not found after extraction" }
+          Add-Content -Path $env:GITHUB_PATH -Value $odin.Directory.FullName
+
+      - name: Install Odin (Linux/macOS)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "${RUNNER_OS}:${RUNNER_ARCH}" in
+            Linux:X64)  asset="odin-linux-amd64-${ODIN_VERSION}.tar.gz" ;;
+            Linux:ARM64) asset="odin-linux-arm64-${ODIN_VERSION}.tar.gz" ;;
+            macOS:X64)  asset="odin-macos-amd64-${ODIN_VERSION}.tar.gz" ;;
+            macOS:ARM64) asset="odin-macos-arm64-${ODIN_VERSION}.tar.gz" ;;
+            *) echo "Unsupported runner ${RUNNER_OS}:${RUNNER_ARCH}" >&2; exit 1 ;;
+          esac
+          url="https://github.com/odin-lang/Odin/releases/download/${ODIN_VERSION}/${asset}"
+          archive="${RUNNER_TEMP}/${asset}"
+          dest="${RUNNER_TEMP}/odin"
+          mkdir -p "$dest"
+          curl -L --fail --retry 3 "$url" -o "$archive"
+          tar -xzf "$archive" -C "$dest"
+          odin_bin="$(find "$dest" -type f -name odin -perm -111 | head -n 1)"
+          test -n "$odin_bin"
+          echo "$(dirname "$odin_bin")" >> "$GITHUB_PATH"
+
+      - name: Install Linux runtime/build dependencies
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev \
+            libgl1-mesa-dev \
+            libx11-dev \
+            libxcursor-dev \
+            libxi-dev \
+            libxinerama-dev \
+            libxrandr-dev
+
+      - name: Show Odin version
+        run: odin version
+
+      - name: Build and package Windows
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force build | Out-Null
+          odin build . -out:build/pong.exe -o:speed -subsystem:windows
+          python scripts/package_release.py --platform windows --arch x64 --binary build/pong.exe
+
+      - name: Build and package Linux
+        if: matrix.platform == 'linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          odin build . -out:build/pong -o:speed
+          python3 scripts/package_release.py --platform linux --arch x64 --binary build/pong
+
+      - name: Build and package macOS arm64
+        if: matrix.platform == 'macos'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          # macos-15 is an arm64 standard GitHub-hosted runner.
+          test "$(uname -m)" = "arm64"
+          odin build . -out:build/pong -o:speed
+          python3 scripts/package_release.py --platform macos --arch arm64 --binary build/pong
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: pong-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  github-release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+          merge-multiple: true
+
+      - name: Create release and upload archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find release-artifacts -maxdepth 1 -type f | sort)
+          test ${#files[@]} -gt 0
+          gh release create "${GITHUB_REF_NAME}" "${files[@]}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "Pong ${GITHUB_REF_NAME}" \
+            --generate-notes

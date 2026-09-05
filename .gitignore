@@ -1,0 +1,7 @@
+build/
+dist/
+pong
+pong.exe
+*.pdb
+*.dSYM/
+.DS_Store
