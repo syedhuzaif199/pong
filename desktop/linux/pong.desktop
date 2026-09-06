@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=UDP Pong
+GenericName=Pong Game
+Comment=Cross-platform host-authoritative multiplayer Pong
+Exec=pong
+Icon=pong
+Terminal=false
+Categories=Game;ArcadeGame;
+StartupNotify=true

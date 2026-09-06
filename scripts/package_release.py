@@ -15,6 +15,8 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 DIST = ROOT / "dist"
 ASSETS = ROOT / "assets"
+DESKTOP = ROOT / "desktop"
+DESKTOP_ICONS = DESKTOP / "icons"
 VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip()
 DISPLAY_VERSION = VERSION if VERSION.startswith("v") else f"v{VERSION}"
 
@@ -64,6 +66,15 @@ def package_linux(binary: Path, arch: str) -> Path:
     shutil.copy2(binary, out)
     make_executable(out)
     copy_common(stage)
+
+    # ELF executables do not carry a desktop icon themselves. Ship a normal
+    # freedesktop launcher, icon, and a no-root installer for ~/.local.
+    shutil.copy2(DESKTOP_ICONS / "pong-256.png", stage / "pong.png")
+    shutil.copy2(DESKTOP / "linux" / "pong.desktop", stage / "pong.desktop")
+    installer = stage / "install-desktop.sh"
+    shutil.copy2(DESKTOP / "linux" / "install-desktop.sh", installer)
+    make_executable(installer)
+
     archive = DIST / f"{name}.tar.gz"
     archive.unlink(missing_ok=True)
     with tarfile.open(archive, "w:gz", compresslevel=9) as tf:
@@ -80,23 +91,28 @@ def package_macos(binary: Path, arch: str) -> Path:
     app = stage / "Pong.app"
     contents = app / "Contents"
     macos = contents / "MacOS"
+    resources = contents / "Resources"
     macos.mkdir(parents=True)
+    resources.mkdir(parents=True)
 
     out = macos / "pong"
     shutil.copy2(binary, out)
     make_executable(out)
     shutil.copytree(ASSETS, macos / "assets", dirs_exist_ok=True)
+    shutil.copy2(DESKTOP_ICONS / "pong.icns", resources / "pong.icns")
 
     plist = {
         "CFBundleName": "Pong",
         "CFBundleDisplayName": "UDP Pong",
         "CFBundleExecutable": "pong",
+        "CFBundleIconFile": "pong.icns",
         "CFBundleIdentifier": "game.ipv6udp.pong",
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": VERSION.lstrip("v"),
         "CFBundleVersion": VERSION.lstrip("v"),
         "NSHighResolutionCapable": True,
         "LSMinimumSystemVersion": "12.0",
+        "LSApplicationCategoryType": "public.app-category.games",
     }
     with (contents / "Info.plist").open("wb") as f:
         plistlib.dump(plist, f, sort_keys=True)
@@ -124,6 +140,15 @@ def main() -> None:
         raise SystemExit(f"binary does not exist: {binary}")
     if not ASSETS.is_dir():
         raise SystemExit(f"assets directory does not exist: {ASSETS}")
+    required_desktop_files = (
+        DESKTOP_ICONS / "pong-256.png",
+        DESKTOP_ICONS / "pong.icns",
+        DESKTOP / "linux" / "pong.desktop",
+        DESKTOP / "linux" / "install-desktop.sh",
+    )
+    for required in required_desktop_files:
+        if not required.is_file():
+            raise SystemExit(f"desktop packaging file does not exist: {required}")
 
     DIST.mkdir(exist_ok=True)
     if args.platform == "windows":

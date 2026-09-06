@@ -45,6 +45,33 @@ Internet_Phase :: enum {
     Error,
 }
 
+internet_phase_label :: proc(phase: Internet_Phase) -> string {
+    switch phase {
+    case .Idle:      return "IDLE"
+    case .Resolving: return "DNS"
+    case .Stun:      return "STUN"
+    case .Creating:  return "RENDEZVOUS"
+    case .Waiting:   return "PEER DISCOVERY"
+    case .Joining:   return "RENDEZVOUS"
+    case .Punching:  return "UDP PUNCH"
+    case .Ready:     return "CONNECTED"
+    case .Error:     return "ERROR"
+    }
+    return "UNKNOWN"
+}
+
+internet_phase_step :: proc(phase: Internet_Phase) -> int {
+    switch phase {
+    case .Idle, .Error:       return 0
+    case .Resolving:          return 1
+    case .Stun:               return 2
+    case .Creating, .Joining: return 3
+    case .Waiting:            return 4
+    case .Punching, .Ready:   return 5
+    }
+    return 0
+}
+
 Internet_HTTP_Buffer :: struct {
     bytes: [2048]u8,
     length: int,
@@ -479,7 +506,7 @@ internet_http_post :: proc(
         _ = curl.easy_setopt(handle, .POSTFIELDSIZE, c.long(len(payload)))
         _ = curl.easy_setopt(handle, .WRITEFUNCTION, internet_curl_write)
         _ = curl.easy_setopt(handle, .WRITEDATA, &response)
-        _ = curl.easy_setopt(handle, .USERAGENT, cstring("UDP-Pong/1.3.0"))
+        _ = curl.easy_setopt(handle, .USERAGENT, cstring("UDP-Pong/1.4.0"))
         _ = curl.easy_setopt(handle, .FOLLOWLOCATION, c.long(1))
         _ = curl.easy_setopt(handle, .POSTREDIR, c.long(curl.REDIR_POST_ALL))
         _ = curl.easy_setopt(handle, .CONNECTTIMEOUT_MS, min(timeout_ms, c.long(4000)))

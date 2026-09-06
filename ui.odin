@@ -185,17 +185,13 @@ allow_room_code_char :: proc(ch: rune) -> bool {
            ch == '-' || ch == ' '
 }
 
-// Convert physical-window mouse coordinates back into our fixed 960x540
-// logical canvas. This lets the same UI work in a resized or fullscreen window.
-logical_mouse_position :: proc() -> [2]f32 {
-    mouse := ui_primary_position()
+// Convert a physical screen point back into our fixed 960x540 logical canvas.
+logical_screen_position :: proc(point: [2]f32) -> [2]f32 {
     screen_w := f32(rl.GetScreenWidth())
     screen_h := f32(rl.GetScreenHeight())
 
     scale := min(screen_w / FIELD_W, screen_h / FIELD_H)
-    if scale <= 0 {
-        return mouse
-    }
+    if scale <= 0 { return point }
 
     draw_w := FIELD_W * scale
     draw_h := FIELD_H * scale
@@ -203,9 +199,14 @@ logical_mouse_position :: proc() -> [2]f32 {
     offset_y := (screen_h - draw_h) * 0.5
 
     return [2]f32{
-        (mouse[0] - offset_x) / scale,
-        (mouse[1] - offset_y) / scale,
+        (point[0] - offset_x) / scale,
+        (point[1] - offset_y) / scale,
     }
+}
+
+// Convert physical-window mouse/touch coordinates back into our logical canvas.
+logical_mouse_position :: proc() -> [2]f32 {
+    return logical_screen_position(ui_primary_position())
 }
 
 present_logical_canvas :: proc(target: rl.RenderTexture2D) {

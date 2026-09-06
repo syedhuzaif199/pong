@@ -14,7 +14,8 @@ INPUT_INTERVAL :: 1.0 / 60.0
 PING_INTERVAL :: 1.0
 PING_RETRY_AFTER :: 2.0
 JOIN_TIMEOUT :: 8.0
-CONNECTION_TIMEOUT :: 5.0
+CONNECTION_WARN_AFTER :: 1.5
+CONNECTION_TIMEOUT :: 10.0
 CONTROL_INTERVAL :: 0.50
 MAX_PLAYER_NAME :: 24
 
@@ -91,7 +92,13 @@ Net_State :: struct {
     ping_outstanding: bool,
     rtt_ms: f32,
     rtt_smoothed_ms: f32,
+    rtt_jitter_ms: f32,
     rtt_valid: bool,
+
+    state_jitter_ms: f32,
+    stream_recv_rate: f32,
+    diagnostic_sample_time: f64,
+    diagnostic_stream_recv: u64,
 }
 
 new_random_id :: proc() -> u32 {
@@ -458,13 +465,18 @@ send_pong :: proc(n: ^Net_State, nonce: u32) {
 record_pong :: proc(n: ^Net_State, nonce: u32) {
     if !n.ping_outstanding || nonce != n.ping_nonce { return }
     sample_ms := f32((rl.GetTime() - n.ping_sent_time) * 1000.0)
-    n.rtt_ms = sample_ms
+
     if n.rtt_valid {
+        delta := sample_ms - n.rtt_ms
+        if delta < 0 { delta = -delta }
+        n.rtt_jitter_ms = n.rtt_jitter_ms * 0.75 + delta * 0.25
         n.rtt_smoothed_ms = n.rtt_smoothed_ms * 0.80 + sample_ms * 0.20
     } else {
         n.rtt_smoothed_ms = sample_ms
+        n.rtt_jitter_ms = 0
         n.rtt_valid = true
     }
+    n.rtt_ms = sample_ms
     n.ping_outstanding = false
 }
 
@@ -716,6 +728,13 @@ net_receive_client :: proc(n: ^Net_State, rules: ^Game_Rules, target: ^Game_Stat
             if state_ok && record_stream_seq(n, seq) {
                 n.packets_recv += 1
                 state_time := rl.GetTime()
+                if n.last_state_recv_time > 0 {
+                    interval_ms := f32((state_time - n.last_state_recv_time) * 1000.0)
+                    expected_ms := f32(STATE_INTERVAL * 1000.0)
+                    jitter_sample := interval_ms - expected_ms
+                    if jitter_sample < 0 { jitter_sample = -jitter_sample }
+                    n.state_jitter_ms = n.state_jitter_ms * 0.85 + jitter_sample * 0.15
+                }
                 n.last_recv_time = state_time
                 n.last_state_recv_time = state_time
                 target^ = state
@@ -770,7 +789,17 @@ client_prediction_horizon :: proc(n: ^Net_State) -> f32 {
 
     horizon := age + transit
     if horizon < 0 { horizon = 0 }
-    if horizon > 0.055 { horizon = 0.055 }
+
+    // At ordinary RTTs 55 ms is enough. On slower paths allow a little more
+    // extrapolation so the client does not intentionally remain a full half-RTT
+    // behind, but keep a hard ceiling to avoid visually inventing long futures.
+    cap: f64 = 0.055
+    if n.rtt_valid {
+        adaptive := f64(n.rtt_smoothed_ms) * 0.0005 + 0.020
+        if adaptive > cap { cap = adaptive }
+    }
+    if cap > 0.090 { cap = 0.090 }
+    if horizon > cap { horizon = cap }
     return f32(horizon)
 }
 
@@ -800,8 +829,36 @@ host_send_state_if_due :: proc(n: ^Net_State, g: Game_State) {
     if now - n.last_stream_send_time >= STATE_INTERVAL { send_state(n, g) }
 }
 
+connection_interrupted :: proc(n: ^Net_State) -> bool {
+    return n.connected && rl.GetTime() - n.last_recv_time > CONNECTION_WARN_AFTER
+}
+
+connection_grace_remaining :: proc(n: ^Net_State) -> f32 {
+    if !n.connected { return 0 }
+    remaining := CONNECTION_TIMEOUT - (rl.GetTime() - n.last_recv_time)
+    if remaining < 0 { remaining = 0 }
+    return f32(remaining)
+}
+
 connection_timed_out :: proc(n: ^Net_State) -> bool {
     return n.connected && rl.GetTime() - n.last_recv_time > CONNECTION_TIMEOUT
+}
+
+net_update_diagnostics :: proc(n: ^Net_State) {
+    now := rl.GetTime()
+    if n.diagnostic_sample_time <= 0 {
+        n.diagnostic_sample_time = now
+        n.diagnostic_stream_recv = n.stream_packets_recv
+        return
+    }
+
+    elapsed := now - n.diagnostic_sample_time
+    if elapsed < 1.0 { return }
+
+    received := n.stream_packets_recv - n.diagnostic_stream_recv
+    n.stream_recv_rate = f32(f64(received) / elapsed)
+    n.diagnostic_stream_recv = n.stream_packets_recv
+    n.diagnostic_sample_time = now
 }
 
 packet_head :: proc(packet: string) -> (kind, rest: string, ok: bool) {

@@ -63,6 +63,10 @@ foreign {
     ) -> i32 ---
 
     pong_android_async_abandon :: proc "c" () ---
+
+    pong_android_back_pressed :: proc "c" () -> i32 ---
+    pong_android_app_foreground :: proc "c" () -> i32 ---
+    pong_android_consume_resume :: proc "c" () -> i32 ---
 }
 
 platform_internal_data_path :: proc(buf: []u8) -> string {
@@ -133,8 +137,24 @@ platform_text_input_value :: proc(buf: []u8) -> string {
 
 platform_window_back_pressed :: proc() -> bool {
     when PONG_ANDROID {
-        return rl.IsKeyPressed(.ESCAPE)
+        return pong_android_back_pressed() != 0 || rl.IsKeyPressed(.ESCAPE)
     } else {
         return rl.IsKeyPressed(.ESCAPE)
+    }
+}
+
+platform_app_foreground :: proc() -> bool {
+    when PONG_ANDROID {
+        return pong_android_app_foreground() != 0
+    } else {
+        return true
+    }
+}
+
+platform_consume_resume_event :: proc() -> bool {
+    when PONG_ANDROID {
+        return pong_android_consume_resume() != 0
+    } else {
+        return false
     }
 }

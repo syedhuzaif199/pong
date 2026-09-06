@@ -216,7 +216,7 @@ lerp_f32 :: proc(a, b, t: f32) -> f32 {
     return a + (b - a) * t
 }
 
-interpolate_render_state :: proc(render: ^Game_State, target: Game_State, dt, prediction_seconds: f32) {
+interpolate_render_state :: proc(render: ^Game_State, target: Game_State, dt, prediction_seconds, jitter_ms: f32) {
     // Scores and terminal state should never visually lag behind a snapshot.
     render.score1 = target.score1
     render.score2 = target.score2
@@ -251,9 +251,20 @@ interpolate_render_state :: proc(render: ^Game_State, target: Game_State, dt, pr
         predicted_ball_x = math.clamp(predicted_ball_x, -BALL_RADIUS, FIELD_W + BALL_RADIUS)
     }
 
-    // Faster correction than the old dt*18 chase removes a large amount of
-    // additional visual latency while still smoothing ordinary packet jitter.
-    world_t := math.clamp(dt * 30.0, f32(0), f32(1))
+    // Clean links can correct aggressively; jittery links get more damping so
+    // packet bunching does not turn into visible micro-teleports. Large errors
+    // always catch up quickly regardless of the current jitter estimate.
+    world_speed: f32 = 38.0
+    if jitter_ms > 12 { world_speed = 30.0 }
+    if jitter_ms > 25 { world_speed = 24.0 }
+
+    ball_error_x := predicted_ball_x - render.ball_x
+    ball_error_y := predicted_ball_y - render.ball_y
+    if math.abs(ball_error_x) > 80 || math.abs(ball_error_y) > 70 {
+        world_speed = max(world_speed, f32(70))
+    }
+
+    world_t := math.clamp(dt * world_speed, f32(0), f32(1))
     render.p1_y = lerp_f32(render.p1_y, target.p1_y, world_t)
     render.ball_x = lerp_f32(render.ball_x, predicted_ball_x, world_t)
     render.ball_y = lerp_f32(render.ball_y, predicted_ball_y, world_t)
@@ -266,43 +277,4 @@ interpolate_render_state :: proc(render: ^Game_State, target: Game_State, dt, pr
         local_t = math.clamp(dt * 20.0, f32(0), f32(1))
     }
     render.p2_y = lerp_f32(render.p2_y, target.p2_y, local_t)
-}
-
-local_input_direction :: proc() -> f32 {
-    when PONG_ANDROID {
-        if rl.GetTouchPointCount() <= 0 { return 0 }
-
-        // Map physical phone coordinates back into the fixed 960x540 game
-        // canvas so the control split follows the actual play field even on
-        // letterboxed screens.
-        touch := rl.GetTouchPosition(0)
-        screen_w := f32(rl.GetScreenWidth())
-        screen_h := f32(rl.GetScreenHeight())
-        if screen_w <= 0 || screen_h <= 0 { return 0 }
-
-        scale_x := screen_w / f32(WINDOW_W)
-        scale_y := screen_h / f32(WINDOW_H)
-        scale := min(scale_x, scale_y)
-        if scale <= 0 { return 0 }
-        offset_x := (screen_w - f32(WINDOW_W) * scale) * 0.5
-        offset_y := (screen_h - f32(WINDOW_H) * scale) * 0.5
-        logical_x := (touch[0] - offset_x) / scale
-        logical_y := (touch[1] - offset_y) / scale
-
-        // The Android-only MENU button lives in this corner. A menu tap must
-        // not leak through as one frame of paddle movement.
-        if logical_x >= f32(WINDOW_W - 125) && logical_y <= 60 { return 0 }
-
-        // Preserve desktop gameplay parity: mobile input is still exactly
-        // -1/0/+1 and therefore uses the same fixed paddle speed as keyboard.
-        if logical_y < f32(FIELD_H) * 0.5 { return -1 }
-        return 1
-    } else {
-        up := rl.IsKeyDown(.W) || rl.IsKeyDown(.UP)
-        down := rl.IsKeyDown(.S) || rl.IsKeyDown(.DOWN)
-
-        if up == down { return 0 }
-        if up { return -1 }
-        return 1
-    }
 }

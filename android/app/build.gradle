@@ -1,5 +1,11 @@
 plugins { id 'com.android.application' }
 
+def releaseStorePath = System.getenv('PONG_ANDROID_KEYSTORE')
+def releaseStorePassword = System.getenv('PONG_ANDROID_STORE_PASSWORD')
+def releaseKeyAlias = System.getenv('PONG_ANDROID_KEY_ALIAS')
+def releaseKeyPassword = System.getenv('PONG_ANDROID_KEY_PASSWORD')
+def hasReleaseSigning = releaseStorePath && releaseStorePassword && releaseKeyAlias && releaseKeyPassword
+
 android {
     namespace 'com.syedhuzaif.udppong'
     compileSdk 36
@@ -8,14 +14,28 @@ android {
         applicationId 'com.syedhuzaif.udppong'
         minSdk 29
         targetSdk 36
-        versionCode 130
-        versionName '1.3.0'
+        versionCode 140
+        versionName '1.4.0'
+    }
+
+    signingConfigs {
+        release {
+            if (hasReleaseSigning) {
+                storeFile file(releaseStorePath)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
             ndk { debugSymbolLevel 'SYMBOL_TABLE' }
+            if (hasReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
         }
     }
 }

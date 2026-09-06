@@ -24,6 +24,42 @@ static bool attach(JNIEnv **out_env, JavaVM **out_vm, bool *did_attach) {
     return true;
 }
 
+static int call_activity_bool_method(const char *name) {
+    JNIEnv *env = nullptr;
+    JavaVM *vm = nullptr;
+    bool did_attach = false;
+    if (!attach(&env, &vm, &did_attach)) return 0;
+
+    android_app *app = GetAndroidApp();
+    jobject activity = app->activity->clazz;
+    jclass cls = env->GetObjectClass(activity);
+    jmethodID method = env->GetMethodID(cls, name, "()Z");
+
+    int result = 0;
+    if (method) {
+        result = env->CallBooleanMethod(activity, method) == JNI_TRUE ? 1 : 0;
+    }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        result = 0;
+    }
+    env->DeleteLocalRef(cls);
+    if (did_attach) vm->DetachCurrentThread();
+    return result;
+}
+
+extern "C" int pong_android_back_pressed(void) {
+    return call_activity_bool_method("takeBackPressed");
+}
+
+extern "C" int pong_android_app_foreground(void) {
+    return call_activity_bool_method("isPongForeground");
+}
+
+extern "C" int pong_android_consume_resume(void) {
+    return call_activity_bool_method("consumeResumeEvent");
+}
+
 extern "C" int pong_android_internal_data_path(unsigned char *output, int output_capacity) {
     if (!output || output_capacity <= 0) return 0;
     android_app *app = GetAndroidApp();

@@ -99,7 +99,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force build | Out-Null
-          odin build . -out:build/pong.exe -o:speed -subsystem:windows -define:RAYLIB_SHARED=true
+          odin build . -out:build/pong.exe -o:speed -subsystem:windows -define:RAYLIB_SHARED=true -resource:desktop/windows/pong.res
           python scripts/package_release.py --platform windows --arch x64 --binary build/pong.exe --raylib-dll "$env:ODIN_ROOT/vendor/raylib/windows/raylib.dll"
 
       - name: Build and package Linux
@@ -133,7 +133,7 @@ jobs:
           retention-days: 14
 
   android-client:
-    name: Android ARM64 APK
+    name: Android ARM64
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -187,23 +187,47 @@ jobs:
           test -n "$odin_bin"
           echo "$(dirname "$odin_bin")" >> "$GITHUB_PATH"
 
-      - name: Build Android APK
+      - name: Build Android package
         shell: bash
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          PONG_ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          PONG_ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          PONG_ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           set -euo pipefail
           bash ./build-android.sh
-          src="android/app/build/outputs/apk/debug/app-debug.apk"
-          test -f "$src"
+
           version="$(tr -d '\r\n' < VERSION)"
           test -n "$version"
           mkdir -p dist
-          cp "$src" "dist/pong-android-arm64-v${version}.apk"
 
-      - name: Upload Android APK
+          if [[ -n "${ANDROID_KEYSTORE_BASE64:-}" && -n "${PONG_ANDROID_STORE_PASSWORD:-}" && -n "${PONG_ANDROID_KEY_ALIAS:-}" && -n "${PONG_ANDROID_KEY_PASSWORD:-}" ]]; then
+            export PONG_ANDROID_KEYSTORE="${RUNNER_TEMP}/pong-release.jks"
+            printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > "$PONG_ANDROID_KEYSTORE"
+            (cd android && bash ./gradlew --no-daemon assembleRelease bundleRelease)
+
+            apk="android/app/build/outputs/apk/release/app-release.apk"
+            aab="android/app/build/outputs/bundle/release/app-release.aab"
+            test -f "$apk"
+            test -f "$aab"
+            cp "$apk" "dist/pong-android-arm64-v${version}.apk"
+            cp "$aab" "dist/pong-android-arm64-v${version}.aab"
+            echo "Built release-signed APK and AAB."
+          else
+            apk="android/app/build/outputs/apk/debug/app-debug.apk"
+            test -f "$apk"
+            cp "$apk" "dist/pong-android-arm64-v${version}-debug.apk"
+            echo "WARNING: Android signing secrets are not configured; publishing debug-signed APK only." >&2
+          fi
+
+      - name: Upload Android package
         uses: actions/upload-artifact@v4
         with:
           name: pong-android-arm64
-          path: dist/pong-android-arm64-v*.apk
+          path: |
+            dist/pong-android-arm64-v*.apk
+            dist/pong-android-arm64-v*.aab
           if-no-files-found: error
           retention-days: 14
 

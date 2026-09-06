@@ -1,9 +1,9 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
-set "BUILD_REV=2026-09-06-v1.3-polish-r8"
+set "BUILD_REV=2026-09-06-v1.4-r1"
 
 rem ============================================================================
-rem UDP Pong v1.3 - Native Windows Android build
+rem UDP Pong v1.4 - Native Windows Android build
 rem
 rem Expected project layout:
 rem   build-android.bat
@@ -177,7 +177,7 @@ if not exist "%DEPS_DIR%" mkdir "%DEPS_DIR%"
 
 rem ----- Environment summary --------------------------------------------------
 echo.
-echo === UDP Pong v1.3 Android build [%BUILD_REV%] ===
+echo === UDP Pong v1.4 Android build [%BUILD_REV%] ===
 echo SDK:      %ANDROID_HOME%
 echo NDK:      %ANDROID_NDK_HOME%
 echo CMake:    %CMAKE%

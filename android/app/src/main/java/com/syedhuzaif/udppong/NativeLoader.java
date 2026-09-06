@@ -35,6 +35,11 @@ public final class NativeLoader extends NativeActivity {
     private EditText textInput;
     private volatile String nativeText = "";
 
+    private volatile boolean backPressedPending = false;
+    private volatile boolean foreground = true;
+    private volatile boolean resumePending = false;
+    private volatile boolean everPaused = false;
+
     private static final String PREFS_NAME = "udp_pong";
     private static final String PREFS_CONFIG_KEY = "pong_cfg";
     private static final String PREFS_LOG_TAG = "UDPPongPrefs";
@@ -86,6 +91,43 @@ public final class NativeLoader extends NativeActivity {
                 nativeText = s.toString();
             }
         });
+    }
+
+    @Override
+    protected void onPause() {
+        foreground = false;
+        everPaused = true;
+        super.onPause();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        foreground = true;
+        if (everPaused) resumePending = true;
+    }
+
+    @Override
+    public void onBackPressed() {
+        // NativeActivity would normally finish the Activity. Pong owns navigation
+        // and pause behavior, so surface the gesture/button to the game loop instead.
+        backPressedPending = true;
+    }
+
+    public boolean takeBackPressed() {
+        if (!backPressedPending) return false;
+        backPressedPending = false;
+        return true;
+    }
+
+    public boolean isPongForeground() {
+        return foreground;
+    }
+
+    public boolean consumeResumeEvent() {
+        if (!resumePending) return false;
+        resumePending = false;
+        return true;
     }
 
     private int androidInputType(int kind) {
@@ -268,7 +310,7 @@ public final class NativeLoader extends NativeActivity {
             connection.setReadTimeout(timeoutMs);
             connection.setInstanceFollowRedirects(true);
             connection.setRequestProperty("Content-Type", "text/plain; charset=utf-8");
-            connection.setRequestProperty("User-Agent", "UDP-Pong/1.3.0 Android");
+            connection.setRequestProperty("User-Agent", "UDP-Pong/1.4.0 Android");
 
             byte[] body = payload.getBytes(StandardCharsets.UTF_8);
             connection.setFixedLengthStreamingMode(body.length);

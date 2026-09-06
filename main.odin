@@ -6,7 +6,7 @@ import "core:os"
 import "core:strconv"
 import rl "vendor:raylib"
 
-APP_VERSION :: "v1.3.0"
+APP_VERSION :: "v1.4.0"
 PRE_COUNTDOWN_FADE_TIME :: f32(0.40)
 LAN_IPV4_FALLBACK_DELAY :: f64(0.75)
 
@@ -78,6 +78,11 @@ App :: struct {
     config_autosave_timer: f32,
 
     mobile_control_hint_timer: f32,
+    input: Input_State,
+
+    connection_was_interrupted: bool,
+    reconnect_notice_timer: f32,
+    resume_notice_timer: f32,
 }
 
 prepare_runtime_directory :: proc() {
@@ -161,12 +166,29 @@ run_game :: proc() {
         dt := rl.GetFrameTime()
         if dt > 0.05 { dt = 0.05 }
 
+        foreground := platform_app_foreground()
+        when PONG_ANDROID {
+            if !foreground {
+                // Android may kill a backgrounded activity without returning through
+                // the normal shutdown path. Flush any pending preferences immediately.
+                save_app_config(&app)
+                if audio_ready { music_suspend(&app.music) }
+            }
+            if platform_consume_resume_event() {
+                if audio_ready { music_resume(&app.music) }
+                app.resume_notice_timer = 2.5
+                if app.screen == .Game { begin_mobile_control_hint(&app) }
+            }
+        }
+
         frame_screen := app.screen
-        update_app(&app, dt)
-        update_config_autosave(&app, dt)
+        if foreground {
+            update_app(&app, dt)
+            update_config_autosave(&app, dt)
+        }
         if app.screen != frame_screen { app.transition_alpha = 1 }
 
-        if audio_ready {
+        if audio_ready && foreground {
             update_music_mode(&app)
             music_update(&app.music, app.preferences, dt)
         }
@@ -235,6 +257,21 @@ begin_mobile_control_hint :: proc(app: ^App) {
     }
 }
 
+update_connection_feedback :: proc(app: ^App) {
+    net_update_diagnostics(&app.net)
+
+    interrupted := connection_interrupted(&app.net)
+    if app.connection_was_interrupted && !interrupted && app.net.connected {
+        app.reconnect_notice_timer = 2.5
+    }
+    app.connection_was_interrupted = interrupted
+}
+
+reset_connection_feedback :: proc(app: ^App) {
+    app.connection_was_interrupted = false
+    app.reconnect_notice_timer = 0
+}
+
 begin_match_start_fade :: proc(app: ^App) {
     if app.match_start_pending { return }
     app.match_start_pending = true
@@ -267,6 +304,12 @@ update_music_mode :: proc(app: ^App) {
 
 update_app :: proc(app: ^App, dt: f32) {
     app.transition_alpha = max(f32(0), app.transition_alpha - dt * 4.5)
+    if app.reconnect_notice_timer > 0 {
+        app.reconnect_notice_timer = max(f32(0), app.reconnect_notice_timer - dt)
+    }
+    if app.resume_notice_timer > 0 {
+        app.resume_notice_timer = max(f32(0), app.resume_notice_timer - dt)
+    }
     update_visual_fx(&app.fx, dt)
 
     when !PONG_ANDROID {
@@ -290,7 +333,7 @@ update_app :: proc(app: ^App, dt: f32) {
         // Buttons perform transitions in draw_main_menu.
 
     case .Online:
-        if platform_window_back_pressed() {
+        if input_back_pressed() {
             app.screen = .Main_Menu
         }
 
@@ -314,7 +357,7 @@ update_app :: proc(app: ^App, dt: f32) {
         if app.preferences.player_name.length > MAX_PLAYER_NAME {
             app.preferences.player_name.length = MAX_PLAYER_NAME
         }
-        if platform_window_back_pressed() {
+        if input_back_pressed() {
             sanitize_player_name(&app.preferences.player_name)
             save_app_config(app)
             app.screen = .Main_Menu
@@ -331,7 +374,7 @@ update_host_setup :: proc(app: ^App) {
         text_field_update(&app.port, allow_port_char)
     }
 
-    if platform_window_back_pressed() {
+    if input_back_pressed() {
         if controls_disabled {
             discovery_host_shutdown(&app.discovery_host)
             net_shutdown(&app.net)
@@ -368,7 +411,7 @@ update_join_setup :: proc(app: ^App) {
         text_field_update(&app.port, allow_port_char)
     }
 
-    if platform_window_back_pressed() {
+    if input_back_pressed() {
         if controls_disabled {
             clear_lan_fallback(app)
             net_shutdown(&app.net)
@@ -446,6 +489,7 @@ persist_rendezvous_settings :: proc(app: ^App) {
 
 start_internet_hosting :: proc(app: ^App) {
     cancel_match_start_fade(app)
+    reset_connection_feedback(app)
 
     rendezvous_url := text_field_string(&app.rendezvous_url)
     if !internet_valid_rendezvous_url(rendezvous_url) {
@@ -479,6 +523,7 @@ start_internet_hosting :: proc(app: ^App) {
 
 start_internet_joining :: proc(app: ^App) {
     cancel_match_start_fade(app)
+    reset_connection_feedback(app)
 
     rendezvous_url := text_field_string(&app.rendezvous_url)
     if !internet_valid_rendezvous_url(rendezvous_url) {
@@ -516,7 +561,7 @@ update_internet_host :: proc(app: ^App) {
         text_field_update(&app.rendezvous_url, allow_server_url_char)
     }
 
-    if platform_window_back_pressed() {
+    if input_back_pressed() {
         if active {
             internet_cancel(&app.internet, &app.net)
             app.online_status = .Idle
@@ -562,7 +607,7 @@ update_internet_join :: proc(app: ^App) {
         if app.room_code.length > 8 { app.room_code.length = 8 }
     }
 
-    if platform_window_back_pressed() {
+    if input_back_pressed() {
         if active {
             internet_cancel(&app.internet, &app.net)
             app.online_status = .Idle
@@ -625,7 +670,7 @@ join_setup_return_screen :: proc(app: ^App) -> Screen {
 }
 
 update_lobby :: proc(app: ^App, dt: f32) {
-    if platform_window_back_pressed() {
+    if input_back_pressed() {
         cancel_match_start_fade(app)
         net_shutdown(&app.net)
         app.online_status = .Idle
@@ -634,9 +679,14 @@ update_lobby :: proc(app: ^App, dt: f32) {
         return
     }
 
+    if input_confirm_pressed() && app.net.connected && !connection_interrupted(&app.net) && !app.match_start_pending {
+        net_set_local_ready(&app.net, !app.net.local_ready)
+    }
+
     #partial switch app.net.role {
     case .Host:
         _, _ = net_receive_host(&app.net, app.network_rules, &app.game)
+        update_connection_feedback(app)
         if app.net.peer_left {
             cancel_match_start_fade(app)
             net_shutdown(&app.net, false)
@@ -649,13 +699,17 @@ update_lobby :: proc(app: ^App, dt: f32) {
             cancel_match_start_fade(app)
             net_shutdown(&app.net, false)
             app.online_status = .Error
-            app.status_message = "Player timed out in the lobby."
+            app.status_message = "Player did not return before the reconnect grace expired."
             app.screen = host_setup_return_screen(app)
             return
         }
 
         net_send_ping_if_due(&app.net)
         net_send_lobby_if_due(&app.net)
+        if connection_interrupted(&app.net) {
+            cancel_match_start_fade(app)
+            return
+        }
 
         if both_players_ready(&app.net) {
             if !app.match_start_pending {
@@ -677,7 +731,7 @@ update_lobby :: proc(app: ^App, dt: f32) {
                 app.pause_settings = false
                 app.countdown_sound_stage = 0
                 begin_mobile_control_hint(app)
-            app.screen = .Game
+                app.screen = .Game
             }
         } else {
             cancel_match_start_fade(app)
@@ -685,6 +739,7 @@ update_lobby :: proc(app: ^App, dt: f32) {
 
     case .Client:
         _, _, got_state := net_receive_client(&app.net, &app.network_rules, &app.target_game)
+        update_connection_feedback(app)
         if got_state {
             cancel_match_start_fade(app)
             clear_ready_state(&app.net)
@@ -708,13 +763,17 @@ update_lobby :: proc(app: ^App, dt: f32) {
             cancel_match_start_fade(app)
             net_shutdown(&app.net, false)
             app.online_status = .Error
-            app.status_message = "Connection to host timed out in the lobby."
+            app.status_message = "Host did not return before the reconnect grace expired."
             app.screen = join_setup_return_screen(app)
             return
         }
 
         net_send_ping_if_due(&app.net)
         net_send_lobby_if_due(&app.net)
+        if connection_interrupted(&app.net) {
+            cancel_match_start_fade(app)
+            return
+        }
 
         if both_players_ready(&app.net) {
             begin_match_start_fade(app)
@@ -731,7 +790,7 @@ update_game :: proc(app: ^App, dt: f32) {
             app.mobile_control_hint_timer = max(f32(0), app.mobile_control_hint_timer - dt)
         }
     }
-    if platform_window_back_pressed() {
+    if input_pause_pressed() {
         if app.pause_settings {
             app.pause_settings = false
             save_app_config(app)
@@ -742,13 +801,14 @@ update_game :: proc(app: ^App, dt: f32) {
 
     direction: f32 = 0
     if !app.paused {
-        direction = local_input_direction()
+        direction = input_paddle_direction(&app.input)
     }
 
     #partial switch app.net.role {
     case .Host:
         before := app.game
         _, _ = net_receive_host(&app.net, app.network_rules, &app.game)
+        update_connection_feedback(app)
         if app.net.peer_left {
             net_shutdown(&app.net, false)
             app.online_status = .Error
@@ -762,7 +822,7 @@ update_game :: proc(app: ^App, dt: f32) {
         if !app.net.connected || connection_timed_out(&app.net) {
             net_shutdown(&app.net, false)
             app.online_status = .Error
-            app.status_message = "Opponent timed out."
+            app.status_message = "Opponent did not return before the reconnect grace expired."
             cancel_match_start_fade(app)
             app.paused = false
             app.pause_settings = false
@@ -770,14 +830,17 @@ update_game :: proc(app: ^App, dt: f32) {
             return
         }
 
+        interrupted := connection_interrupted(&app.net)
+        if interrupted { direction = 0 }
+
         net_send_ping_if_due(&app.net)
         if app.game.game_over {
             host_send_state_if_due(&app.net, app.game)
             net_send_rematch_if_due(&app.net)
             alt_down := rl.IsKeyDown(.LEFT_ALT) || rl.IsKeyDown(.RIGHT_ALT)
-            if !app.paused && rl.IsKeyPressed(.ENTER) && !alt_down { net_request_rematch(&app.net) }
+            if !interrupted && !app.paused && input_confirm_pressed() && !alt_down { net_request_rematch(&app.net) }
 
-            if both_players_want_rematch(&app.net) {
+            if !interrupted && both_players_want_rematch(&app.net) {
                 if !app.match_start_pending {
                     // Keep the game-over/menu track audible until both players agree,
                     // then fade it before the next countdown begins.
@@ -803,18 +866,21 @@ update_game :: proc(app: ^App, dt: f32) {
             }
         } else {
             cancel_match_start_fade(app)
-            step_host_game(&app.game, app.network_rules, direction, app.net.remote_input, dt)
+            if !interrupted {
+                step_host_game(&app.game, app.network_rules, direction, app.net.remote_input, dt)
+            }
+            // Keep sending the last authoritative state during the grace window.
+            // If only the peer->host path was interrupted, this helps the peer
+            // stay synchronized while probes restore the reverse direction.
             host_send_state_if_due(&app.net, app.game)
         }
         process_game_events(app, before, app.game)
         app.render_game = app.game
 
     case .Client:
-        if !app.render_game.game_over {
-            client_send_input_if_due(&app.net, direction)
-        }
         before := app.target_game
         _, _, got_state := net_receive_client(&app.net, &app.network_rules, &app.target_game)
+        update_connection_feedback(app)
         if got_state {
             process_game_events(app, before, app.target_game)
             if before.game_over && !app.target_game.game_over && app.target_game.countdown_timer > 0 {
@@ -838,7 +904,7 @@ update_game :: proc(app: ^App, dt: f32) {
         if !app.net.connected || connection_timed_out(&app.net) {
             net_shutdown(&app.net, false)
             app.online_status = .Error
-            app.status_message = "Host timed out."
+            app.status_message = "Host did not return before the reconnect grace expired."
             cancel_match_start_fade(app)
             app.paused = false
             app.pause_settings = false
@@ -846,19 +912,28 @@ update_game :: proc(app: ^App, dt: f32) {
             return
         }
 
-        net_send_ping_if_due(&app.net)
-        interpolate_render_state(&app.render_game, app.target_game, dt, client_prediction_horizon(&app.net))
+        interrupted := connection_interrupted(&app.net)
+        if interrupted { direction = 0 }
 
-        if !app.paused && app.render_game.countdown_timer <= 0 && !app.render_game.game_over {
+        if !app.render_game.game_over {
+            client_send_input_if_due(&app.net, direction)
+        }
+        net_send_ping_if_due(&app.net)
+
+        if !interrupted {
+            interpolate_render_state(&app.render_game, app.target_game, dt, client_prediction_horizon(&app.net), max(app.net.rtt_jitter_ms, app.net.state_jitter_ms))
+        }
+
+        if !interrupted && !app.paused && app.render_game.countdown_timer <= 0 && !app.render_game.game_over {
             move_paddle(&app.render_game.p2_y, direction, app.network_rules.paddle_speed, dt)
         }
 
         if app.render_game.game_over {
             net_send_rematch_if_due(&app.net)
             alt_down := rl.IsKeyDown(.LEFT_ALT) || rl.IsKeyDown(.RIGHT_ALT)
-            if !app.paused && rl.IsKeyPressed(.ENTER) && !alt_down { net_request_rematch(&app.net) }
+            if !interrupted && !app.paused && input_confirm_pressed() && !alt_down { net_request_rematch(&app.net) }
 
-            if both_players_want_rematch(&app.net) {
+            if !interrupted && both_players_want_rematch(&app.net) {
                 begin_match_start_fade(app)
             } else {
                 cancel_match_start_fade(app)
@@ -870,6 +945,52 @@ update_game :: proc(app: ^App, dt: f32) {
     }
 
     update_countdown_sfx(app, &app.render_game)
+}
+
+draw_connection_banner :: proc(app: ^App, y: f32) {
+    if connection_interrupted(&app.net) {
+        remaining := connection_grace_remaining(&app.net)
+        buf: [160]u8
+        text := fmt.bprintf(buf[:], "CONNECTION INTERRUPTED  -  retrying for %.1f s", remaining)
+        rect := rl.Rectangle{230, y, 500, 34}
+        rl.DrawRectangleRec(rect, rl.Color{48, 25, 29, 225})
+        rl.DrawRectangleLinesEx(rect, 1, DANGER)
+        draw_text_centered_in(text, rect, 16, DANGER)
+    } else if app.reconnect_notice_timer > 0 {
+        rect := rl.Rectangle{330, y, 300, 32}
+        rl.DrawRectangleRec(rect, rl.Color{20, 46, 33, 220})
+        rl.DrawRectangleLinesEx(rect, 1, GOOD)
+        draw_text_centered_in("CONNECTION RESTORED", rect, 16, GOOD)
+    } else if app.resume_notice_timer > 0 {
+        rect := rl.Rectangle{350, y, 260, 32}
+        rl.DrawRectangleRec(rect, rl.Color{20, 34, 48, 210})
+        rl.DrawRectangleLinesEx(rect, 1, ACCENT)
+        draw_text_centered_in("RESUMED", rect, 16, ACCENT)
+    }
+}
+
+draw_internet_phase_badge :: proc(s: ^Internet_State, y: f32) {
+    step := internet_phase_step(s.phase)
+    if step <= 0 { return }
+    label := internet_phase_label(s.phase)
+    buf: [96]u8
+    text := fmt.bprintf(buf[:], "STEP %d/5  %s", step, label)
+    rect := rl.Rectangle{720, y, 210, 28}
+    rl.DrawRectangleRec(rect, rl.Color{20, 26, 36, 220})
+    rl.DrawRectangleLinesEx(rect, 1, ACCENT)
+    draw_text_centered_in(text, rect, 13, ACCENT)
+}
+
+draw_mobile_control_affordance :: proc(app: ^App) {
+    when PONG_ANDROID {
+        if app.paused || app.render_game.game_over { return }
+        x: int = 66
+        if app.net.role == .Client { x = WINDOW_W - 82 }
+        colour := rl.Color{143, 153, 170, 72}
+        draw_text("^", x, 142, 24, colour)
+        draw_text("TOUCH / SWIPE", x - 36, 174, 11, colour)
+        draw_text("v", x, 365, 24, colour)
+    }
 }
 
 draw_app :: proc(app: ^App) {
@@ -913,7 +1034,7 @@ draw_main_menu :: proc(app: ^App) {
         app.running = false
     }
 
-    draw_text_centered("W/S or arrows to move during a match", 492, 17, MUTED)
+    draw_text_centered("Keyboard, controller, or touch - same paddle physics", 492, 17, MUTED)
     version_buf: [128]u8
     version_text := fmt.bprintf(version_buf[:], "%s  |  protocol 4  |  discovery 1  |  rendezvous 1", APP_VERSION)
     draw_text(version_text, 18, WINDOW_H - 24, 13, MUTED)
@@ -963,6 +1084,7 @@ draw_internet_host :: proc(app: ^App) {
 
     draw_text_centered("HOST WITH CODE", 18, 40, FG)
     draw_text_centered("Cloudflare discovers your UDP mapping; the rendezvous service only exchanges room data.", 62, 14, MUTED)
+    if active || app.internet.phase == .Error { draw_internet_phase_badge(&app.internet, 20) }
 
     text_field("Rendezvous URL", &app.rendezvous_url, rl.Rectangle{190, 94, 610, 44}, !active, .Uri)
 
@@ -1022,6 +1144,7 @@ draw_internet_join :: proc(app: ^App) {
 
     draw_text_centered("JOIN WITH CODE", 24, 40, FG)
     draw_text_centered("Enter the same HTTP rendezvous URL and the code sent by the host.", 70, 14, MUTED)
+    if active || app.internet.phase == .Error { draw_internet_phase_badge(&app.internet, 24) }
 
     text_field("Rendezvous URL", &app.rendezvous_url, rl.Rectangle{190, 112, 610, 46}, !active, .Uri)
     text_field("Room code", &app.room_code, rl.Rectangle{300, 206, 360, 54}, !active, .Code)
@@ -1434,6 +1557,7 @@ draw_lobby :: proc(app: ^App) {
     transport_buf: [96]u8
     transport_text := fmt.bprintf(transport_buf[:], "Connected over %s / UDP", net_transport_name(&app.net))
     draw_text_centered(transport_text, 104, 13, MUTED)
+    draw_connection_banner(app, 112)
 
     rl.DrawRectangleRec(rl.Rectangle{105, 130, 340, 145}, PANEL)
     rl.DrawRectangleLinesEx(rl.Rectangle{105, 130, 340, 145}, 1, ACCENT)
@@ -1468,6 +1592,9 @@ draw_lobby :: proc(app: ^App) {
     if button(ready_label, rl.Rectangle{330, 356, 300, 56}, !app.match_start_pending) {
         net_set_local_ready(&app.net, !app.net.local_ready)
     }
+    when !PONG_ANDROID {
+        draw_text_centered("ENTER / controller A toggles ready", 418, 13, MUTED)
+    }
 
     if app.net.local_ready && !app.net.remote_ready {
         draw_text_centered("Waiting for opponent...", 426, 17, MUTED)
@@ -1496,6 +1623,7 @@ parse_port_field :: proc(app: ^App) -> (int, bool) {
 
 start_hosting :: proc(app: ^App) {
     cancel_match_start_fade(app)
+    reset_connection_feedback(app)
     port, ok := parse_port_field(app)
     if !ok {
         app.online_status = .Error
@@ -1522,6 +1650,7 @@ start_hosting :: proc(app: ^App) {
 
 start_joining :: proc(app: ^App) {
     cancel_match_start_fade(app)
+    reset_connection_feedback(app)
     clear_lan_fallback(app)
     port, ok := parse_port_field(app)
     if !ok {
@@ -1565,8 +1694,9 @@ draw_game_screen :: proc(app: ^App) {
     names_buf: [160]u8
     names := fmt.bprintf(names_buf[:], "%s  vs  %s", host_name, client_name)
     draw_text_centered(names, 78, 16, MUTED)
+    draw_connection_banner(app, 102)
     when PONG_ANDROID {
-        if !app.paused && button("MENU", rl.Rectangle{WINDOW_W - 112, 12, 94, 34}) {
+        if !app.paused && button("MENU", rl.Rectangle{WINDOW_W - 138, 12, 120, 44}) {
             app.paused = true
         }
     } else {
@@ -1577,19 +1707,21 @@ draw_game_screen :: proc(app: ^App) {
         loss := packet_loss_percent(&app.net)
         silent_for := seconds_since_last_recv(&app.net)
         stats_buf: [256]u8
+        jitter := max(app.net.rtt_jitter_ms, app.net.state_jitter_ms)
         if app.net.rtt_valid {
-            stats := fmt.bprintf(stats_buf[:], "RTT: %.0f ms   loss: %.1f%%   last packet: %.2f s", app.net.rtt_smoothed_ms, loss, silent_for)
+            stats := fmt.bprintf(stats_buf[:], "RTT %.0f ms   jitter %.1f ms   loss %.1f%%   stream %.1f/s   last %.2f s", app.net.rtt_smoothed_ms, jitter, loss, app.net.stream_recv_rate, silent_for)
             draw_text(stats, 18, WINDOW_H - 46, 15, MUTED)
         } else {
-            stats := fmt.bprintf(stats_buf[:], "RTT: measuring...   loss: %.1f%%   last packet: %.2f s", loss, silent_for)
+            stats := fmt.bprintf(stats_buf[:], "RTT measuring...   loss %.1f%%   stream %.1f/s   last %.2f s", loss, app.net.stream_recv_rate, silent_for)
             draw_text(stats, 18, WINDOW_H - 46, 15, MUTED)
         }
 
         counts_buf: [256]u8
         counts := fmt.bprintf(
             counts_buf[:],
-            "%s UDP   session:%d   sent:%d recv:%d   stream recv:%d lost:%d   errors:%d/%d",
+            "%s UDP   input:%s   session:%d   sent:%d recv:%d   stream recv:%d lost:%d   errors:%d/%d",
             net_transport_name(&app.net),
+            input_source_name(app.input.source),
             app.net.session_id,
             app.net.packets_sent,
             app.net.packets_recv,
@@ -1613,16 +1745,17 @@ draw_game_screen :: proc(app: ^App) {
     }
 
     when PONG_ANDROID {
+        draw_mobile_control_affordance(app)
         if app.mobile_control_hint_timer > 0 && !app.paused && !g.game_over {
             fade := min(f32(1), app.mobile_control_hint_timer / 1.25)
-            alpha := u8(f32(175) * fade)
+            alpha := u8(f32(190) * fade)
             hint_colour := rl.Color{143, 153, 170, alpha}
-            hint_bg := rl.Color{5, 6, 9, u8(f32(92) * fade)}
+            hint_bg := rl.Color{5, 6, 9, u8(f32(105) * fade)}
 
-            rl.DrawRectangle(245, 120, 470, 42, hint_bg)
-            draw_text_centered("HOLD THE UPPER HALF TO MOVE UP", 131, 17, hint_colour)
-            rl.DrawRectangle(245, 378, 470, 42, hint_bg)
-            draw_text_centered("HOLD THE LOWER HALF TO MOVE DOWN", 389, 17, hint_colour)
+            rl.DrawRectangle(210, 120, 540, 42, hint_bg)
+            draw_text_centered("HOLD TOP / BOTTOM  OR  SWIPE UP / DOWN", 131, 17, hint_colour)
+            rl.DrawRectangle(282, 378, 396, 36, hint_bg)
+            draw_text_centered("PADDLE SPEED IS THE SAME ON EVERY PLATFORM", 387, 13, hint_colour)
         }
     }
 
@@ -1651,7 +1784,7 @@ draw_game_screen :: proc(app: ^App) {
         if button(rematch_label, rl.Rectangle{330, 305, 300, 52}, rematch_enabled) {
             net_request_rematch(&app.net)
         }
-        draw_text_centered("ENTER also requests a rematch", 372, 15, MUTED)
+        draw_text_centered("ENTER / controller A also requests a rematch", 372, 15, MUTED)
         draw_text_centered("The next match starts when both players accept.", 410, 16, MUTED)
     }
 
@@ -1730,6 +1863,7 @@ update_countdown_sfx :: proc(app: ^App, g: ^Game_State) {
 
 leave_current_match :: proc(app: ^App) {
     cancel_match_start_fade(app)
+    reset_connection_feedback(app)
     net_shutdown(&app.net)
     app.online_status = .Idle
     app.status_message = ""
@@ -1762,7 +1896,7 @@ draw_pause_overlay :: proc(app: ^App) {
     }
 
     when PONG_ANDROID {
-        draw_text_centered("Tap RESUME to return to the match", 430, 15, MUTED)
+        draw_text_centered("Android Back / MENU toggles this overlay", 430, 15, MUTED)
     } else {
         draw_text_centered("ESC resumes", 430, 15, MUTED)
     }

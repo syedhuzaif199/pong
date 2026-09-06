@@ -1,39 +1,33 @@
-# UDP Pong v1.3 Android
+# UDP Pong v1.4 Android
 
-Android is an **ARM64-first** port of the desktop v1.2 client. Gameplay protocol 4,
-discovery protocol 1, rendezvous protocol 1, Cloudflare STUN, and the Render room
-service are unchanged.
+The Android client is ARM64 (`arm64-v8a`) and Android 10/API 29+. Gameplay protocol 4, discovery protocol 1, rendezvous protocol 1, Cloudflare STUN, and the Render-style HTTPS rendezvous service remain compatible with v1.3 desktop clients.
 
-## Requirements
+## Build requirements
 
 - Odin `dev-2026-07` or compatible
 - Android Studio / Android SDK
-- Android NDK (r28+ recommended)
-- CMake 3.25+ (Ubuntu 24.04 ships 3.28.x)
-- Git
+- Android NDK (side-by-side; r29/r30 are supported by the project build scripts)
+- CMake 3.25+
 - JDK 17
-- Linux/macOS: `build-android.sh`; Windows: `build-android.bat`
+- Git
 
-Set:
+Windows: install SDK/NDK with Android Studio and run:
+
+```bat
+build-android.bat
+```
+
+Linux/macOS:
 
 ```bash
 export ANDROID_HOME="$HOME/Android/Sdk"
 export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/<installed-version>"
-```
-
-Then on Linux/macOS:
-
-```bash
 bash ./build-android.sh
 ```
 
-On Windows, use `build-android.bat`.
+The scripts build raylib 6.0 for Android, compile Odin as PIC ARM64 Android object code, build the Java/JNI bridge, link `libmain.so`, package assets, and run Gradle.
 
-The first build downloads raylib 6.0 into `android/.deps/raylib`, builds it for
-`arm64-v8a`, compiles the Odin package as PIC Android ARM64 object code, and links
-both into `libmain.so` for a NativeActivity APK.
-
-If Gradle is installed, the script also builds:
+Debug APK:
 
 ```text
 android/app/build/outputs/apk/debug/app-debug.apk
@@ -45,27 +39,19 @@ Install with:
 adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-## Android-specific behavior
+## v1.4 Android behavior
 
-- Landscape/fullscreen NativeActivity.
-- App assets are packaged under APK `assets/assets/`, preserving existing
-  `assets/...` paths used by the desktop game.
-- Config is stored under Android's app-private internal data directory.
-- Menu buttons use first-touch as the primary pointer.
-- During a match, touching the upper half moves the local paddle up; touching the
-  lower half moves it down.
-- HTTP rendezvous calls use Android `HttpURLConnection`; Android does not link
-  desktop `libcurl`.
-- STUN and gameplay remain native UDP and use the same protocol as v1.2 desktop.
+- landscape/fullscreen NativeActivity
+- real Android IME-backed text entry for names, ports, addresses, URLs, and room codes
+- settings stored in private `SharedPreferences`
+- hold upper/lower half or swipe/drag vertically to request up/down paddle input
+- touch never changes paddle speed; input remains `-1/0/+1` on every platform
+- permanent faint control affordances plus onboarding hint
+- Android Back and on-screen MENU open the existing pause overlay
+- background/foreground lifecycle suspends/resumes music and participates in reconnect handling
+- HTTPS rendezvous/DNS work runs asynchronously through the Java bridge so room creation/joining does not freeze rendering/audio
+- STUN and gameplay remain native UDP
 
-## Current first-port caveats
+## Release signing
 
-- Android is ARM64-only for v1.3 initially.
-- LAN discovery still uses the Linux-oriented discovery implementation and needs
-  device testing; Internet room-code play is the primary Android path.
-
-## Why the build compiles raylib
-
-Odin includes raylib bindings and desktop binaries, but its distribution does not
-ship an Android `libraylib.a`. Android therefore compiles raylib 6.0 against the NDK
-and links it with Odin's Android object code.
+`app/build.gradle` reads signing credentials from environment variables. See the repository-root `ANDROID_SIGNING.md`. CI creates a signed release APK and AAB when signing secrets are configured; otherwise it publishes a clearly labeled debug APK.

@@ -5,7 +5,7 @@ cd /d "%~dp0"
 rem v1.2 uses vendor:curl for HTTPS rendezvous. On Windows, static raylib
 rem and static libcurl are built against opposite CRT choices, so build
 rem raylib as a DLL to keep the executable on libcurl/Odin's libcmt side.
-odin build . -out:pong.exe -define:RAYLIB_SHARED=true %*
+odin build . -out:pong.exe -define:RAYLIB_SHARED=true -resource:desktop\windows\pong.res %*
 if errorlevel 1 exit /b %errorlevel%
 
 for %%I in (odin.exe) do set "ODIN_EXE=%%~$PATH:I"

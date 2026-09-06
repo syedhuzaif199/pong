@@ -20,6 +20,7 @@ Music_System :: struct {
     menu_gain:     f32,
     gameplay_gain: f32,
     mode: Music_Mode,
+    suspended: bool,
 }
 
 Audio_System :: struct {
@@ -49,6 +50,20 @@ music_load :: proc(music: ^Music_System) {
 
     music.mode = .Silent
     music_set_mode(music, .Menu)
+}
+
+music_suspend :: proc(music: ^Music_System) {
+    if music.suspended { return }
+    if music.menu_ready && music.menu_playing { rl.PauseMusicStream(music.menu) }
+    if music.gameplay_ready && music.gameplay_playing { rl.PauseMusicStream(music.gameplay) }
+    music.suspended = true
+}
+
+music_resume :: proc(music: ^Music_System) {
+    if !music.suspended { return }
+    if music.menu_ready && music.menu_playing { rl.ResumeMusicStream(music.menu) }
+    if music.gameplay_ready && music.gameplay_playing { rl.ResumeMusicStream(music.gameplay) }
+    music.suspended = false
 }
 
 music_unload :: proc(music: ^Music_System) {
@@ -99,6 +114,7 @@ approach_f32 :: proc(value, target, amount: f32) -> f32 {
 }
 
 music_update :: proc(music: ^Music_System, settings: App_Settings, dt: f32) {
+    if music.suspended { return }
     menu_target: f32 = 0
     gameplay_target: f32 = 0
     #partial switch music.mode {

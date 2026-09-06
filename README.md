@@ -1,31 +1,46 @@
-# UDP Pong — Odin + raylib (v1.3.0)
+# UDP Pong — Odin + raylib (v1.4.0)
 
-A small two-player Pong game written in Odin with raylib. Gameplay is host-authoritative UDP. Pong supports IPv4 and IPv6, LAN discovery, direct IP play, and short-code Internet play.
+A small two-player Pong game written in Odin with raylib. Gameplay is host-authoritative UDP. Pong supports IPv4 and IPv6, LAN discovery, direct IP play, short-code Internet play, desktop controllers, and Android touch controls.
 
-> **App v1.3.0 · gameplay protocol v4 · discovery protocol v1 · HTTP rendezvous protocol v1**
+> **App v1.4.0 · gameplay protocol v4 · discovery protocol v1 · HTTP rendezvous protocol v1**
 >
-> Application versions and wire-protocol versions are independent. v1.3 keeps the v1.2 wire protocols so Android and desktop clients can play together.
+> Application versions and wire-protocol versions are independent. v1.4 deliberately keeps the v1.3 wire protocols, so v1.4 and v1.3 peers remain network-compatible.
 
-## What's new in v1.3.0
+## What's new in v1.4.0
 
-- first Android ARM64 client (`arm64-v8a`, API 29+)
-- raylib NativeActivity + Android NDK build pipeline
-- touch menu interaction and touch paddle controls
-- Android app-private preferences and APK-packaged audio assets
-- Android Java HTTPS bridge for the Render rendezvous API
-- Android APK artifact in GitHub release CI
-- all v1.2 networking remains compatible, including six-character Internet room codes
-- **Cloudflare public STUN** (`stun.cloudflare.com:3478/udp`) to discover the public UDP mapping of the exact Pong gameplay socket
-- a separate **HTTP/HTTPS rendezvous service** for room creation and candidate exchange
-- Render-ready Go rendezvous server and root `render.yaml`
-- candidate exchange for global IPv6, same-LAN IPv4, and STUN-observed public IP/port
-- simultaneous UDP hole punching
-- direct IPv6 remains the preferred candidate when available
-- existing LAN discovery and direct IP joining remain available
-- rendezvous URL is remembered locally
-- HTTPS client support through Odin's `vendor:curl`
+### Controls
 
-v1.3.0 does **not** include TURN/relay gameplay. Symmetric NAT, restrictive CGNAT, enterprise firewalls, or networks that block peer-to-peer UDP can still prevent a direct connection.
+- one paddle-input layer for keyboard, controller, and Android touch
+- controller D-pad / left stick controls the paddle with the same fixed speed as keyboard
+- controller A/Cross confirms ready/rematch actions; B/Circle backs out; Start opens the in-game pause menu
+- Android supports both hold-upper/lower-half controls and swipe/drag direction control
+- swipe does **not** introduce variable paddle speed; every platform still sends only `-1`, `0`, or `+1` input
+- larger Android MENU target, Android Back opens the same pause overlay, and persistent low-opacity touch/swipe affordances make the mobile controls discoverable
+
+### Resilience and lifecycle
+
+- transient gameplay/lobby packet loss now enters a 10-second reconnect grace window instead of immediately destroying the session
+- after 1.5 seconds of silence the host freezes authoritative gameplay while both peers continue probing
+- a recovered path resumes the existing session automatically without changing protocol 4
+- Android background/foreground handling suspends/resumes music, saves settings, and exposes a short resume/reconnect status banner
+
+### Network feel and diagnostics
+
+- RTT jitter and authoritative-state arrival jitter are measured separately
+- net stats now show RTT, jitter, packet loss, received stream rate, transport, and active input source
+- client extrapolation uses measured RTT with a bounded prediction horizon
+- visual correction adapts to jitter: crisp on clean links, more damped on unstable links, with a hard catch-up path for large errors
+- room-code setup shows explicit progress through DNS/STUN, rendezvous, peer discovery, UDP punching, and connected states
+
+### Android and release polish
+
+- Android settings remain in app-private `SharedPreferences` and survive process restarts
+- Android launcher metadata/icon are included
+- Windows executables embed the Pong icon directly; macOS releases are real `Pong.app` bundles with `.icns`; Linux releases ship a freedesktop launcher/icon installer
+- GitHub Actions can produce a release-signed APK and AAB when Android signing secrets are configured
+- without signing secrets CI publishes an explicitly named `-debug.apk` fallback rather than disguising a debug build as a release artifact
+
+v1.4.0 still does **not** include TURN/relay gameplay. Symmetric NAT, restrictive CGNAT, enterprise firewalls, or networks that block peer-to-peer UDP can still prevent a direct connection.
 
 ## Connection modes
 
@@ -201,7 +216,7 @@ build.bat
 The equivalent manual commands are:
 
 ```powershell
-odin build . -out:pong.exe -define:RAYLIB_SHARED=true
+odin build . -out:pong.exe -define:RAYLIB_SHARED=true -resource:desktop\windows\pong.res
 copy <ODIN_ROOT>\vendor\raylib\windows\raylib.dll .\raylib.dll
 ```
 
@@ -226,7 +241,7 @@ Or during development:
 Windows:
 
 ```powershell
-odin run . -define:RAYLIB_SHARED=true
+odin run . -define:RAYLIB_SHARED=true -resource:desktop\windows\pong.res
 ```
 
 Linux/macOS:
@@ -249,21 +264,25 @@ Linux/macOS:
 ./build-release.sh
 ```
 
-The Windows ZIP contains both `pong.exe` and `raylib.dll`; keep them together.
+The Windows ZIP contains both `pong.exe` and `raylib.dll`; keep them together. The executable itself embeds the Pong icon, so Explorer/taskbar/shortcuts can use it without a sidecar `.ico` file.
+
+The macOS ZIP contains a normal `Pong.app` bundle with `Contents/Resources/pong.icns` referenced by `Info.plist`. It remains unsigned/unnotarized.
+
+The Linux archive contains the portable `pong` binary plus `pong.png`, `pong.desktop`, and `install-desktop.sh`. Running `./install-desktop.sh` installs a per-user launcher/icon under `~/.local` (or `$XDG_DATA_HOME`) without root privileges. The ELF binary itself does not embed an application icon.
 
 Expected client archives:
 
 ```text
-pong-v1.3.0-windows-x64.zip
-pong-v1.3.0-linux-x64.tar.gz
-pong-v1.3.0-macos-arm64.zip
-pong-android-arm64-v1.3.0.apk
+pong-v1.4.0-windows-x64.zip
+pong-v1.4.0-linux-x64.tar.gz
+pong-v1.4.0-macos-arm64.zip
+pong-android-arm64-v1.4.0.apk
 ```
 
 GitHub Actions also builds the standalone HTTP rendezvous binary archive:
 
 ```text
-pong-rendezvous-v1.3.0-linux-x64.tar.gz
+pong-rendezvous-v1.4.0-linux-x64.tar.gz
 ```
 
 The standalone binary and the `server/` source are the same service. The binary is useful if you want to run the rendezvous API somewhere other than Render.
@@ -293,7 +312,7 @@ C:\Games\Pong\pong.exe
 does not automatically apply to:
 
 ```text
-C:\Users\you\Downloads\pong-v1.2.0-windows-x64\pong.exe
+C:\Users\you\Downloads\pong-v1.4.0-windows-x64\pong.exe
 ```
 
 If Windows prompts for network access, allow Pong on the networks where you intend to play. Moving `pong.exe` later can cause Windows to require permission again for the new path.
@@ -313,11 +332,11 @@ There is no `3478/udp` rule to open on the HTTP rendezvous server. Cloudflare ow
 
 ## Release caveats
 
-- room-code connectivity is direct-only in v1.3.0; there is no TURN/relay fallback yet
+- room-code connectivity is direct-only in v1.4.0; there is no TURN/relay fallback yet
 - rendezvous traffic is protected by HTTPS when you configure an `https://` URL; local `http://` is supported for development
 - room codes and peer tokens are short-lived and stored only in memory
 - the macOS `.app` is unsigned and unnotarized
-- there is no custom platform icon yet
+- Windows and macOS release artifacts carry the Pong application icon; Linux ships standard freedesktop icon/launcher metadata because ELF binaries do not embed application icons
 - Windows and Linux distributions are portable archives rather than installers
 
 See `THIRD_PARTY_NOTICES.md` for dependency notices.
@@ -328,27 +347,20 @@ See `THIRD_PARTY_NOTICES.md` for dependency notices.
 - Native IPv6 candidate text is now copied into caller-owned storage before the HTTP rendezvous payload is formatted.
 - The rendezvous server also treats malformed optional candidates as absent rather than rejecting otherwise valid room metadata.
 
-## Android (v1.3)
+## Android (v1.4)
 
-v1.3 adds an **ARM64 Android client** while keeping gameplay protocol 4, discovery
+v1.4 continues the **ARM64 Android client** while keeping gameplay protocol 4, discovery
 protocol 1, rendezvous protocol 1, Cloudflare STUN, and the Render room service
-compatible with the desktop v1.2 clients.
+compatible with v1.3/v1.4 desktop clients.
 
 Android uses raylib's NativeActivity backend. The build compiles raylib 6.0 against
 the Android NDK, compiles the Odin package for `linux_arm64` with the Android
 subtarget, then links both into `libmain.so` and packages an APK.
 
 Requirements: Android SDK + NDK, CMake, JDK 17, Git, and Odin `dev-2026-07`.
-On Windows, WSL is the recommended build host. Set `ANDROID_HOME` and
-`ANDROID_NDK_HOME`, then run:
-
-```bash
-./build-android.sh
-```
+On Windows use the native `build-android.bat` with the SDK/NDK installed by Android Studio. On Linux/macOS set `ANDROID_HOME` and `ANDROID_NDK_HOME`, then run `bash ./build-android.sh`.
 
 The first target is `arm64-v8a` / API 29+. Room-code Internet play is the primary
-Android path. Touch controls use the upper/lower halves of the screen for paddle
-movement, menu widgets accept touch, config lives in app-private storage, and
-rendezvous HTTPS uses Android's Java networking rather than desktop libcurl.
+Android path. Touch controls support upper/lower-half hold plus swipe/drag direction, while preserving the same fixed paddle speed as desktop. Android Back and the on-screen MENU button open the pause overlay, config lives in app-private storage, and rendezvous HTTPS uses Android's Java networking rather than desktop libcurl.
 
 See `android/README.md` for setup, installation, and current caveats.

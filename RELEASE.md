@@ -1,174 +1,63 @@
-# UDP Pong v1.3.0
+# UDP Pong v1.4.0 — release checklist
 
-## Android client
+Application version **v1.4.0** keeps gameplay protocol **4**, discovery protocol **1**, and rendezvous protocol **1**. v1.3 and v1.4 peers remain wire-compatible.
 
-- Adds the first Android ARM64 client (`arm64-v8a`, Android 10/API 29+).
-- Keeps gameplay protocol 4, discovery protocol 1, and rendezvous protocol 1 for desktop compatibility.
-- Builds raylib 6.0 for Android with the NDK and links the Odin game into a NativeActivity shared library.
-- Adds touch menu interaction and touch paddle controls.
-- Stores preferences in Android app-private storage.
-- Packages existing music/SFX as APK assets.
-- Uses Android `HttpURLConnection` for Render rendezvous HTTPS; STUN and gameplay remain native UDP.
-- Adds `build-android.sh` plus an Android Gradle project and GitHub Actions APK artifact.
+## Required smoke tests
 
-### First-port limitations
+Before tagging, verify at minimum:
 
-- ARM64 only for v1.3.0.
-- Internet room-code play is the primary tested design; Android LAN broadcast discovery still needs device validation.
-- Soft-keyboard character delivery through raylib can vary by IME and needs device validation.
-- GitHub's first Android artifact is debug-signed for direct installation, not Play Store release signing.
+1. Windows and Linux desktop builds launch and preserve v1.3 LAN/direct behavior.
+2. Android ARM64 APK builds, installs, launches, accepts IME text, and persists settings after force-stop/relaunch.
+3. Keyboard, controller, hold-touch, and swipe-touch all resolve to the same fixed-speed paddle input.
+4. Android Back/MENU and controller Start open the in-game pause overlay without moving the paddle.
+5. LAN discovery and direct IPv4/IPv6 joining still work.
+6. Room-code create/join remains non-blocking while music continues.
+7. Cross-network room-code play succeeds through Cloudflare STUN + HTTPS rendezvous + direct UDP punching.
+8. RTT/jitter/loss/stream-rate diagnostics update during a match.
+9. Brief network interruption freezes authoritative gameplay and recovers within the 10-second grace window.
+10. A >10-second interruption exits cleanly with a reconnect-grace-expired message.
+11. Android background/foreground resumes cleanly and does not lose settings.
+12. Full match, synchronized countdown, game-over, and mutual rematch still work.
+13. Windows `pong.exe` shows the Pong icon in Explorer/shortcuts.
+14. macOS `Pong.app` shows the Pong icon in Finder.
+15. Linux `./install-desktop.sh` creates a user-local launcher with the Pong icon.
+16. Rendezvous server `go test ./...` and `/healthz` succeed.
 
----
+## Android signing
 
-# Releasing Pong
+See `ANDROID_SIGNING.md`. With the four signing secrets configured, release CI emits a signed APK and AAB. Without them it emits an explicitly named debug APK fallback.
 
-Public releases use semantic versions such as `v1.0.0`, `v1.1.0`, `v1.2.0`, and `v1.3.0`.
-
-## v1.2.0 release scope
-
-Before tagging, verify that v1.2.0 includes:
-
-- v1.1 IPv4/IPv6 dual-stack gameplay and LAN fallback;
-- six-character room-code hosting/joining;
-- Cloudflare STUN Binding from the exact gameplay UDP socket;
-- a separate HTTP/HTTPS rendezvous service;
-- Render deployment support (`render.yaml`, `0.0.0.0:$PORT`, `/healthz`);
-- rendezvous candidate exchange;
-- simultaneous UDP hole punching;
-- candidate preference of global IPv6, local IPv4, then STUN-observed public endpoint;
-- explicit failure when direct punching requires a future relay/TURN path;
-- bundled/tested Go HTTP rendezvous source;
-- Windows full-path firewall guidance;
-- no pre-public internal milestone labels in the UI or release metadata.
-
-Protocol versions are **gameplay v4**, **discovery v1**, and **HTTP rendezvous v1**.
-
-## Infrastructure split
+## Expected artifacts
 
 ```text
-Cloudflare STUN        UDP 3478        public UDP mapping discovery
-Render rendezvous      HTTPS           room codes + candidate exchange
-Pong peers             UDP             hole punching + gameplay
+pong-v1.4.0-windows-x64.zip
+pong-v1.4.0-linux-x64.tar.gz
+pong-v1.4.0-macos-arm64.zip
+pong-rendezvous-v1.4.0-linux-x64.tar.gz
+
+# with Android signing secrets:
+pong-android-arm64-v1.4.0.apk
+pong-android-arm64-v1.4.0.aab
+
+# without Android signing secrets:
+pong-android-arm64-v1.4.0-debug.apk
 ```
 
-The Render service does not need public UDP. Do not deploy the old combined STUN/rendezvous design for v1.2.0.
+## Tagging
 
-## Toolchains
-
-Client release CI is pinned to Odin `dev-2026-07`. The rendezvous server uses Go `1.23.x` in GitHub Actions.
-
-Linux client builds also require libcurl/mbedTLS development packages because the client uses Odin `vendor:curl` for HTTPS.
-
-## Local client builds
-
-Windows:
-
-```powershell
-build.bat
-build-release.bat
-```
-
-Windows v1.2 builds use `-define:RAYLIB_SHARED=true` because the bundled static raylib and `vendor:curl` libraries select conflicting CRTs when linked together. Both scripts locate the active Odin installation automatically. Development builds copy `raylib.dll` beside `pong.exe`, and release packaging includes the DLL in the Windows ZIP.
-
-Linux/macOS:
+After committing, pushing, and testing the exact intended commit:
 
 ```bash
-odin build . -out:pong
-./build-release.sh
+git status
+git log -1 --oneline
+git tag -a v1.4.0 -m "Pong v1.4.0"
+git push origin v1.4.0
 ```
 
-## Local rendezvous-server build
+Tags matching `v*` trigger `.github/workflows/release.yml`. The GitHub Release is published only after desktop, Android, and rendezvous-server jobs succeed.
 
-```bash
-cd server
-go test ./...
-go build -o pong-rendezvous .
-./pong-rendezvous -listen 0.0.0.0:10000
-```
+## Notes
 
-Use `http://127.0.0.1:10000` when the client and service are on the same machine.
-
-## Render smoke test
-
-Deploy from the root `render.yaml` or manually configure:
-
-```text
-Root directory: server
-Build:          go build -trimpath -ldflags="-s -w" -o pong-rendezvous .
-Start:          ./pong-rendezvous
-Health check:   /healthz
-```
-
-Confirm:
-
-```bash
-curl https://YOUR-SERVICE.onrender.com/healthz
-```
-
-returns:
-
-```text
-ok
-```
-
-Then put the same `https://YOUR-SERVICE.onrender.com` URL into both Pong clients.
-
-## Required v1.2 smoke tests
-
-Test at least:
-
-1. existing LAN IPv6-preferred join;
-2. existing LAN IPv4 fallback;
-3. direct IPv4 join;
-4. direct IPv6 join where available;
-5. Cloudflare STUN public endpoint appears on both clients;
-6. room creation over HTTPS returns a six-character code;
-7. room join over the same Render URL succeeds;
-8. both peers receive candidate data and the same punch nonce;
-9. peers establish a direct candidate and reach the normal lobby;
-10. full match + synchronized countdown + rematch over the punched path;
-11. punching timeout presents the relay/TURN limitation cleanly;
-12. Render `/healthz` succeeds and no public UDP port is configured for the rendezvous service;
-13. Windows release ZIP is extracted to its final path and firewall permission is granted for that path.
-
-For NAT traversal, test on genuinely different access networks when possible. Two peers on one LAN are not sufficient to validate Internet hole punching.
-
-## Expected release artifacts
-
-```text
-pong-v1.3.0-windows-x64.zip
-pong-v1.3.0-linux-x64.tar.gz
-pong-v1.3.0-macos-arm64.zip
-pong-android-arm64-v1.3.0.apk
-pong-rendezvous-v1.3.0-linux-x64.tar.gz
-```
-
-## Tag release
-
-After the tested commit is pushed:
-
-```bash
-git tag -a v1.3.0 -m "Pong v1.3.0"
-git push origin v1.3.0
-```
-
-The GitHub Actions workflow builds all desktop archives, the Android ARM64 APK, plus the Linux x64 HTTP rendezvous binary and attaches them to the GitHub Release.
-
-## Windows release note
-
-Windows Firewall rules are path-specific. Test the downloaded/extracted release from the actual folder users will run it from. A `pong.exe` that is allowed in a development directory does not prove a copy under Downloads or another folder has permission.
-
-## macOS
-
-`Pong.app` is currently unsigned and unnotarized, so Gatekeeper may warn after Internet download.
-
-### v1.2.0 candidate robustness fix
-
-- Windows no longer advertises IPv4-mapped IPv6 interface addresses as native IPv6 candidates.
-- Rendezvous CREATE/JOIN no longer rejects an otherwise valid room when an optional network candidate is malformed; the bad candidate is dropped and remaining candidates are used.
-
-### Room-code candidate lifetime fix
-
-- Fixed an Internet-room bug where the native IPv6 candidate was returned as a string view into a local stack buffer. On machines with a global IPv6 address this could corrupt `RV_CREATE`/`RV_JOIN` and make the rendezvous service reply `BAD_REQUEST`; WSL often avoided the bug by having no advertisable global IPv6 and sending `-` instead.
-- Native IPv6 candidate text is now copied into caller-owned storage before the HTTP rendezvous payload is formatted.
-- The rendezvous server also treats malformed optional candidates as absent rather than rejecting otherwise valid room metadata.
+- Windows Firewall permissions are path-specific; test the extracted release from its final directory.
+- macOS output is still unsigned/unnotarized unless a separate signing/notarization pipeline is added.
+- Internet room-code play remains direct P2P; there is no TURN/relay fallback in v1.4.0.
