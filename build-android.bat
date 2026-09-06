@@ -1,6 +1,6 @@
 @echo off
 setlocal EnableExtensions EnableDelayedExpansion
-set "BUILD_REV=2026-09-06-v1.3-polish-r7"
+set "BUILD_REV=2026-09-06-v1.3-polish-r8"
 
 rem ============================================================================
 rem UDP Pong v1.3 - Native Windows Android build

@@ -9,10 +9,10 @@ service are unchanged.
 - Odin `dev-2026-07` or compatible
 - Android Studio / Android SDK
 - Android NDK (r28+ recommended)
-- CMake
+- CMake 3.25+ (Ubuntu 24.04 ships 3.28.x)
 - Git
 - JDK 17
-- Linux/macOS host; on Windows, run the script from WSL with the SDK/NDK visible
+- Linux/macOS: `build-android.sh`; Windows: `build-android.bat`
 
 Set:
 
@@ -21,11 +21,13 @@ export ANDROID_HOME="$HOME/Android/Sdk"
 export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/<installed-version>"
 ```
 
-Then:
+Then on Linux/macOS:
 
 ```bash
-./android/build_android.sh
+bash ./build-android.sh
 ```
+
+On Windows, use `build-android.bat`.
 
 The first build downloads raylib 6.0 into `android/.deps/raylib`, builds it for
 `arm64-v8a`, compiles the Odin package as PIC Android ARM64 object code, and links
@@ -61,12 +63,6 @@ adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 - Android is ARM64-only for v1.3 initially.
 - LAN discovery still uses the Linux-oriented discovery implementation and needs
   device testing; Internet room-code play is the primary Android path.
-- Text entry currently asks Android to show the soft keyboard and consumes
-  raylib key/character events. IME behavior varies by device; if a particular
-  keyboard does not emit usable character events, the next patch should replace
-  this with a small in-game keyboard/IME bridge.
-- Rendezvous HTTP remains synchronous, matching v1.2 desktop behavior; a sleeping
-  Render free service can still briefly stall the UI.
 
 ## Why the build compiles raylib
 
