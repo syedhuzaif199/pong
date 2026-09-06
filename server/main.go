@@ -363,28 +363,15 @@ func parseCandidates(p []string) (candidateSet, bool) {
 	if len(p) != 6 {
 		return candidateSet{}, false
 	}
-	publicPort := parsePortAllowZero(p[1])
-	ipv6Port := parsePortAllowZero(p[3])
-	local4Port := parsePortAllowZero(p[5])
-	if publicPort < 0 || ipv6Port < 0 || local4Port < 0 {
-		return candidateSet{}, false
-	}
 
-	publicIP := normalizeIP(p[0], 0)
-	ipv6 := normalizeIP(p[2], 6)
-	local4 := normalizeIP(p[4], 4)
-	if (p[0] != "-" && publicIP == "") || (p[2] != "-" && ipv6 == "") || (p[4] != "-" && local4 == "") {
-		return candidateSet{}, false
-	}
-	if publicIP == "" {
-		publicPort = 0
-	}
-	if ipv6 == "" {
-		ipv6Port = 0
-	}
-	if local4 == "" {
-		local4Port = 0
-	}
+	// Candidates are hints, not authentication or room metadata. A platform may
+	// surface an unusable interface address (for example an IPv4-mapped IPv6
+	// address on Windows). Drop an invalid optional candidate instead of rejecting
+	// an otherwise valid CREATE/JOIN request. Hole punching can still use the
+	// remaining candidates.
+	publicIP, publicPort := normalizeCandidate(p[0], p[1], 0)
+	ipv6, ipv6Port := normalizeCandidate(p[2], p[3], 6)
+	local4, local4Port := normalizeCandidate(p[4], p[5], 4)
 
 	return candidateSet{
 		publicIP:   publicIP,
@@ -394,6 +381,18 @@ func parseCandidates(p []string) (candidateSet, bool) {
 		local4:     local4,
 		local4Port: local4Port,
 	}, true
+}
+
+func normalizeCandidate(value, portText string, family int) (string, int) {
+	port := parsePortAllowZero(portText)
+	if port < 1 {
+		return "", 0
+	}
+	ip := normalizeIP(value, family)
+	if ip == "" {
+		return "", 0
+	}
+	return ip, port
 }
 
 func normalizeIP(value string, family int) string {

@@ -314,3 +314,9 @@ There is no `3478/udp` rule to open on the HTTP rendezvous server. Cloudflare ow
 - Windows and Linux distributions are portable archives rather than installers
 
 See `THIRD_PARTY_NOTICES.md` for dependency notices.
+
+### Room-code candidate lifetime fix
+
+- Fixed an Internet-room bug where the native IPv6 candidate was returned as a string view into a local stack buffer. On machines with a global IPv6 address this could corrupt `RV_CREATE`/`RV_JOIN` and make the rendezvous service reply `BAD_REQUEST`; WSL often avoided the bug by having no advertisable global IPv6 and sending `-` instead.
+- Native IPv6 candidate text is now copied into caller-owned storage before the HTTP rendezvous payload is formatted.
+- The rendezvous server also treats malformed optional candidates as absent rather than rejecting otherwise valid room metadata.

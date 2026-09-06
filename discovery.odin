@@ -92,6 +92,18 @@ is_advertisable_ip6 :: proc(addr: net.IP6_Address) -> bool {
     if addr == net.IP6_Any || addr == net.IP6_Loopback { return false }
 
     bytes := transmute([16]u8)addr
+    // An IPv4-mapped IPv6 value is not a native IPv6 candidate. Windows can
+    // expose these through interface enumeration; advertising one as IPv6 makes
+    // the rendezvous server (correctly) reject its address family.
+    ipv4_mapped := true
+    for i in 0..<10 {
+        if bytes[i] != 0 {
+            ipv4_mapped = false
+            break
+        }
+    }
+    if ipv4_mapped && bytes[10] == 0xff && bytes[11] == 0xff { return false }
+
     // Link-local addresses require an interface scope id, which core:net.Endpoint
     // does not currently carry. Do not advertise those.
     if bytes[0] == 0xfe && (bytes[1] & 0xc0) == 0x80 { return false }

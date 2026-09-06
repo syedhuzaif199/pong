@@ -320,11 +320,17 @@ internet_bound_port :: proc(n: ^Net_State) -> int {
     return ep.port
 }
 
-internet_local_ipv6 :: proc(n: ^Net_State) -> string {
-    if !n.accepts_ipv6 { return "-" }
+internet_local_ipv6 :: proc(n: ^Net_State, buf: []u8) -> string {
+    if !n.accepts_ipv6 || len(buf) == 0 { return "-" }
     address, address_len, ok := find_advertisable_ipv6()
     if !ok || address_len <= 0 { return "-" }
-    return string(address[:address_len])
+
+    // `find_advertisable_ipv6` returns its text in an array by value. Do not
+    // return a string view into that local array: the view would dangle after
+    // this procedure returns. Copy it into storage owned by the caller instead.
+    count := min(address_len, len(buf))
+    copy(buf[:count], address[:count])
+    return string(buf[:count])
 }
 
 internet_local_ipv4 :: proc() -> string {
@@ -541,7 +547,8 @@ internet_public_candidate :: proc(s: ^Internet_State) -> (string, int) {
 
 internet_send_create :: proc(s: ^Internet_State, n: ^Net_State) -> bool {
     port := internet_bound_port(n)
-    ipv6 := internet_local_ipv6(n)
+    ipv6_buf: [64]u8
+    ipv6 := internet_local_ipv6(n, ipv6_buf[:])
     local4 := internet_local_ipv4()
     public_ip, public_port := internet_public_candidate(s)
     ipv6_port := 0
@@ -584,7 +591,8 @@ internet_send_wait :: proc(s: ^Internet_State, n: ^Net_State) -> bool {
 
 internet_send_join :: proc(s: ^Internet_State, n: ^Net_State) -> bool {
     port := internet_bound_port(n)
-    ipv6 := internet_local_ipv6(n)
+    ipv6_buf: [64]u8
+    ipv6 := internet_local_ipv6(n, ipv6_buf[:])
     local4 := internet_local_ipv4()
     public_ip, public_port := internet_public_candidate(s)
     ipv6_port := 0

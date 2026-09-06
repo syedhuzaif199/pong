@@ -91,3 +91,19 @@ func TestHealth(t *testing.T) {
 		t.Fatalf("unexpected health response: %d %q", rr.Code, rr.Body.String())
 	}
 }
+
+func TestCreateDropsInvalidOptionalCandidate(t *testing.T) {
+	s := &server{rooms: make(map[string]*room)}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/v1/create", s.handleCreate)
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// Windows interface enumeration can surface an IPv4-mapped IPv6 address.
+	// It is not a valid native IPv6 candidate, but it must not prevent room creation.
+	created := post(t, ts.Client(), ts.URL+"/v1/create", "RV_CREATE|1|4|404|Alice|203.0.113.10|50001|::ffff:192.168.1.10|50001|192.168.1.10|50001")
+	cp := strings.Split(created, "|")
+	if len(cp) != 5 || cp[0] != "RV_CREATED" {
+		t.Fatalf("invalid optional candidate rejected whole room: %q", created)
+	}
+}

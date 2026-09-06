@@ -138,3 +138,14 @@ Windows Firewall rules are path-specific. Test the downloaded/extracted release 
 ## macOS
 
 `Pong.app` is currently unsigned and unnotarized, so Gatekeeper may warn after Internet download.
+
+### v1.2.0 candidate robustness fix
+
+- Windows no longer advertises IPv4-mapped IPv6 interface addresses as native IPv6 candidates.
+- Rendezvous CREATE/JOIN no longer rejects an otherwise valid room when an optional network candidate is malformed; the bad candidate is dropped and remaining candidates are used.
+
+### Room-code candidate lifetime fix
+
+- Fixed an Internet-room bug where the native IPv6 candidate was returned as a string view into a local stack buffer. On machines with a global IPv6 address this could corrupt `RV_CREATE`/`RV_JOIN` and make the rendezvous service reply `BAD_REQUEST`; WSL often avoided the bug by having no advertisable global IPv6 and sending `-` instead.
+- Native IPv6 candidate text is now copied into caller-owned storage before the HTTP rendezvous payload is formatted.
+- The rendezvous server also treats malformed optional candidates as absent rather than rejecting otherwise valid room metadata.
