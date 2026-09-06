@@ -310,7 +310,7 @@ public final class NativeLoader extends NativeActivity {
             connection.setReadTimeout(timeoutMs);
             connection.setInstanceFollowRedirects(true);
             connection.setRequestProperty("Content-Type", "text/plain; charset=utf-8");
-            connection.setRequestProperty("User-Agent", "UDP-Pong/1.4.0 Android");
+            connection.setRequestProperty("User-Agent", "UDP-Pong/1.5.0 Android");
 
             byte[] body = payload.getBytes(StandardCharsets.UTF_8);
             connection.setFixedLengthStreamingMode(body.length);

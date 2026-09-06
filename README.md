@@ -1,10 +1,24 @@
-# UDP Pong — Odin + raylib (v1.4.0)
+# UDP Pong — Odin + raylib (v1.5.0)
 
-A small two-player Pong game written in Odin with raylib. Gameplay is host-authoritative UDP. Pong supports IPv4 and IPv6, LAN discovery, direct IP play, short-code Internet play, desktop controllers, and Android touch controls.
+A small Pong game written in Odin with raylib, with solo CPU, local 2-player, and online multiplayer. Gameplay is host-authoritative UDP. Pong supports IPv4 and IPv6, LAN discovery, direct IP play, short-code Internet play, desktop controllers, and Android touch controls.
 
-> **App v1.4.0 · gameplay protocol v4 · discovery protocol v1 · HTTP rendezvous protocol v1**
+> **App v1.5.0 · gameplay protocol v4 · discovery protocol v1 · HTTP rendezvous protocol v1**
 >
-> Application versions and wire-protocol versions are independent. v1.4 deliberately keeps the v1.3 wire protocols, so v1.4 and v1.3 peers remain network-compatible.
+> Application versions and wire-protocol versions are independent. v1.5 keeps gameplay protocol 4, so its online mode remains wire-compatible with v1.3/v1.4 peers.
+
+
+## What's new in v1.5.0
+
+**Local Play** is now a first-class part of Pong:
+
+- **VS CPU** with Easy, Normal, and Hard difficulty. Difficulty changes reaction time, aiming error, and dead-zone only; the CPU never exceeds the configured paddle speed.
+- **Local 2P** on desktop: Player 1 uses `W/S` or controller 1; Player 2 uses arrow keys or controller 2.
+- **Local 2P on Android**: each player owns one half of the touchscreen, so two simultaneous touches can control both paddles.
+- Local matches use the same winning-score, ball-speed, and paddle-speed rules as online matches.
+- Local pause actually freezes simulation, while online pause retains the existing host-authoritative behavior.
+- Local rematches start immediately without network ready-state ceremony.
+
+Online gameplay is intentionally unchanged and remains gameplay protocol **4**, so v1.5 does not introduce a protocol bump merely for local modes.
 
 ## What's new in v1.4.0
 
@@ -40,7 +54,7 @@ A small two-player Pong game written in Odin with raylib. Gameplay is host-autho
 - GitHub Actions can produce a release-signed APK and AAB when Android signing secrets are configured
 - without signing secrets CI publishes an explicitly named `-debug.apk` fallback rather than disguising a debug build as a release artifact
 
-v1.4.0 still does **not** include TURN/relay gameplay. Symmetric NAT, restrictive CGNAT, enterprise firewalls, or networks that block peer-to-peer UDP can still prevent a direct connection.
+v1.5.0 still does **not** include TURN/relay gameplay. Symmetric NAT, restrictive CGNAT, enterprise firewalls, or networks that block peer-to-peer UDP can still prevent a direct connection.
 
 ## Connection modes
 
@@ -273,16 +287,16 @@ The Linux archive contains the portable `pong` binary plus `pong.png`, `pong.des
 Expected client archives:
 
 ```text
-pong-v1.4.0-windows-x64.zip
-pong-v1.4.0-linux-x64.tar.gz
-pong-v1.4.0-macos-arm64.zip
-pong-android-arm64-v1.4.0.apk
+pong-v1.5.0-windows-x64.zip
+pong-v1.5.0-linux-x64.tar.gz
+pong-v1.5.0-macos-arm64.zip
+pong-android-arm64-v1.5.0.apk
 ```
 
 GitHub Actions also builds the standalone HTTP rendezvous binary archive:
 
 ```text
-pong-rendezvous-v1.4.0-linux-x64.tar.gz
+pong-rendezvous-v1.5.0-linux-x64.tar.gz
 ```
 
 The standalone binary and the `server/` source are the same service. The binary is useful if you want to run the rendezvous API somewhere other than Render.
@@ -312,7 +326,7 @@ C:\Games\Pong\pong.exe
 does not automatically apply to:
 
 ```text
-C:\Users\you\Downloads\pong-v1.4.0-windows-x64\pong.exe
+C:\Users\you\Downloads\pong-v1.5.0-windows-x64\pong.exe
 ```
 
 If Windows prompts for network access, allow Pong on the networks where you intend to play. Moving `pong.exe` later can cause Windows to require permission again for the new path.
@@ -332,7 +346,7 @@ There is no `3478/udp` rule to open on the HTTP rendezvous server. Cloudflare ow
 
 ## Release caveats
 
-- room-code connectivity is direct-only in v1.4.0; there is no TURN/relay fallback yet
+- room-code connectivity is direct-only in v1.5.0; there is no TURN/relay fallback yet
 - rendezvous traffic is protected by HTTPS when you configure an `https://` URL; local `http://` is supported for development
 - room codes and peer tokens are short-lived and stored only in memory
 - the macOS `.app` is unsigned and unnotarized
@@ -347,11 +361,11 @@ See `THIRD_PARTY_NOTICES.md` for dependency notices.
 - Native IPv6 candidate text is now copied into caller-owned storage before the HTTP rendezvous payload is formatted.
 - The rendezvous server also treats malformed optional candidates as absent rather than rejecting otherwise valid room metadata.
 
-## Android (v1.4)
+## Android (v1.5)
 
-v1.4 continues the **ARM64 Android client** while keeping gameplay protocol 4, discovery
+v1.5 continues the **ARM64 Android client** while keeping gameplay protocol 4, discovery
 protocol 1, rendezvous protocol 1, Cloudflare STUN, and the Render room service
-compatible with v1.3/v1.4 desktop clients.
+compatible with v1.3/v1.4/v1.5 desktop clients.
 
 Android uses raylib's NativeActivity backend. The build compiles raylib 6.0 against
 the Android NDK, compiles the Odin package for `linux_arm64` with the Android

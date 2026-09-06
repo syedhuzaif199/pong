@@ -60,6 +60,7 @@ App_Settings :: struct {
     sfx_muted:       bool,
     fullscreen:      bool,
     show_net_stats:  bool,
+    cpu_difficulty:   int,
     last_join_address: Text_Field,
     last_join_port:  int,
     rendezvous_url: Text_Field,
@@ -82,6 +83,7 @@ config_values_equal :: proc(a, b: App_Settings, rules_a, rules_b: Game_Rules) ->
            a.sfx_muted == b.sfx_muted &&
            a.fullscreen == b.fullscreen &&
            a.show_net_stats == b.show_net_stats &&
+           a.cpu_difficulty == b.cpu_difficulty &&
            config_text_equal(a.last_join_address, b.last_join_address) &&
            a.last_join_port == b.last_join_port &&
            config_text_equal(a.rendezvous_url, b.rendezvous_url) &&
@@ -98,6 +100,7 @@ default_app_settings :: proc() -> App_Settings {
         sfx_muted = false,
         fullscreen = false,
         show_net_stats = true,
+        cpu_difficulty = 1,
         last_join_port = 7777,
     }
     text_field_set(&settings.player_name, "Player")
@@ -163,6 +166,11 @@ parse_config_text :: proc(data: string, settings: ^App_Settings, last_rules: ^Ga
             parsed, parse_ok := strconv.parse_int(value)
             if parse_ok {
                 settings.show_net_stats = parsed != 0
+            }
+        case "cpu_difficulty":
+            parsed, parse_ok := strconv.parse_int(value)
+            if parse_ok && parsed >= 0 && parsed <= 2 {
+                settings.cpu_difficulty = parsed
             }
         case "last_join_ipv6", "last_join_address":
             if net.parse_address(value) != nil {
@@ -242,10 +250,10 @@ save_config :: proc(settings: App_Settings, last_rules: Game_Rules) -> bool {
     rendezvous_url := text_field_string(&rendezvous_url_field)
     if !internet_valid_rendezvous_url(rendezvous_url) { rendezvous_url = RENDEZVOUS_DEFAULT_URL }
 
-    buf: [1440]u8
+    buf: [1480]u8
     text := fmt.bprintf(
         buf[:],
-        "player_name=%s\nmusic_volume=%d\nmusic_muted=%d\nsfx_volume=%d\nsfx_muted=%d\nfullscreen=%d\nshow_net_stats=%d\nlast_join_address=%s\nlast_join_port=%d\nrendezvous_url=%s\nlast_winning_score=%d\nlast_ball_speed=%.0f\nlast_paddle_speed=%.0f\n",
+        "player_name=%s\nmusic_volume=%d\nmusic_muted=%d\nsfx_volume=%d\nsfx_muted=%d\nfullscreen=%d\nshow_net_stats=%d\ncpu_difficulty=%d\nlast_join_address=%s\nlast_join_port=%d\nrendezvous_url=%s\nlast_winning_score=%d\nlast_ball_speed=%.0f\nlast_paddle_speed=%.0f\n",
         name,
         settings.music_volume,
         muted,
@@ -253,6 +261,7 @@ save_config :: proc(settings: App_Settings, last_rules: Game_Rules) -> bool {
         sfx_muted,
         fullscreen,
         stats,
+        settings.cpu_difficulty,
         last_join_address,
         settings.last_join_port,
         rendezvous_url,

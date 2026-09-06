@@ -506,7 +506,7 @@ internet_http_post :: proc(
         _ = curl.easy_setopt(handle, .POSTFIELDSIZE, c.long(len(payload)))
         _ = curl.easy_setopt(handle, .WRITEFUNCTION, internet_curl_write)
         _ = curl.easy_setopt(handle, .WRITEDATA, &response)
-        _ = curl.easy_setopt(handle, .USERAGENT, cstring("UDP-Pong/1.4.0"))
+        _ = curl.easy_setopt(handle, .USERAGENT, cstring("UDP-Pong/1.5.0"))
         _ = curl.easy_setopt(handle, .FOLLOWLOCATION, c.long(1))
         _ = curl.easy_setopt(handle, .POSTREDIR, c.long(curl.REDIR_POST_ALL))
         _ = curl.easy_setopt(handle, .CONNECTTIMEOUT_MS, min(timeout_ms, c.long(4000)))

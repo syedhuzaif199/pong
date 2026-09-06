@@ -1,6 +1,8 @@
-# UDP Pong v1.4 Android
+# UDP Pong v1.5 Android
 
-The Android client is ARM64 (`arm64-v8a`) and Android 10/API 29+. Gameplay protocol 4, discovery protocol 1, rendezvous protocol 1, Cloudflare STUN, and the Render-style HTTPS rendezvous service remain compatible with v1.3 desktop clients.
+v1.5 also adds Local Play on Android: VS CPU uses the existing touch/swipe control, while Local 2P splits the screen into left/right player touch zones and supports two simultaneous touches.
+
+The Android client is ARM64 (`arm64-v8a`) and Android 10/API 29+. Gameplay protocol 4, discovery protocol 1, rendezvous protocol 1, Cloudflare STUN, and the Render-style HTTPS rendezvous service remain compatible with v1.3/v1.4/v1.5 desktop clients.
 
 ## Build requirements
 
@@ -39,7 +41,7 @@ Install with:
 adb install -r android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-## v1.4 Android behavior
+## v1.5 Android behavior
 
 - landscape/fullscreen NativeActivity
 - real Android IME-backed text entry for names, ports, addresses, URLs, and room codes
