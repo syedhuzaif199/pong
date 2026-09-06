@@ -19,7 +19,11 @@ ui_touch_down: bool
 ui_touch_pressed: bool
 ui_touch_position: [2]f32
 
+ui_text_input_active_this_frame: bool
+ui_text_input_was_active: bool
+
 ui_begin_frame :: proc() {
+    ui_text_input_active_this_frame = false
     when PONG_ANDROID {
         ui_touch_down = rl.GetTouchPointCount() > 0
         ui_touch_pressed = ui_touch_down && !ui_touch_was_down
@@ -31,6 +35,10 @@ ui_begin_frame :: proc() {
 
 ui_end_frame :: proc() {
     when PONG_ANDROID {
+        if ui_text_input_was_active && !ui_text_input_active_this_frame {
+            platform_text_input_end()
+        }
+        ui_text_input_was_active = ui_text_input_active_this_frame
         ui_touch_was_down = ui_touch_down
     }
 }
@@ -81,6 +89,22 @@ text_field_string :: proc(field: ^Text_Field) -> string {
 
 text_field_update :: proc(field: ^Text_Field, allow: proc(rune) -> bool) {
     if !field.active {
+        return
+    }
+
+    when PONG_ANDROID {
+        input_buf: [512]u8
+        input := platform_text_input_value(input_buf[:])
+        field.length = 0
+        for ch in input {
+            if field.length >= len(field.bytes) {
+                break
+            }
+            if ch >= 32 && ch <= 126 && allow(ch) {
+                field.bytes[field.length] = u8(ch)
+                field.length += 1
+            }
+        }
         return
     }
 
@@ -272,20 +296,32 @@ button :: proc(label: string, rect: rl.Rectangle, enabled := true) -> bool {
     return clicked
 }
 
-text_field :: proc(label: string, field: ^Text_Field, rect: rl.Rectangle, enabled := true) -> bool {
+text_field :: proc(
+    label: string,
+    field: ^Text_Field,
+    rect: rl.Rectangle,
+    enabled := true,
+    input_kind := Text_Input_Kind.Text,
+) -> bool {
     mouse := logical_mouse_position()
     hot := enabled && rl.CheckCollisionPointRec(mouse, rect)
     clicked := hot && ui_primary_pressed()
     if clicked {
         request_ui_click()
         field.active = true
-        platform_show_keyboard(true)
-    } else if ui_primary_pressed() && !hot {
+        when PONG_ANDROID {
+            platform_text_input_begin(text_field_string(field), input_kind)
+        }
+    } else if field.active && ui_primary_pressed() && !hot {
+        // Do not hide the IME here: another text field later in this same frame
+        // may be the one that was tapped. ui_end_frame owns keyboard dismissal.
         field.active = false
-        platform_show_keyboard(false)
     }
     if !enabled {
         field.active = false
+    }
+    if field.active && enabled {
+        ui_text_input_active_this_frame = true
     }
 
     draw_text(label, int(rect.x), int(rect.y) - 25, 18, MUTED)

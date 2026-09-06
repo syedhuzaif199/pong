@@ -196,15 +196,8 @@ run_game :: proc() {
 }
 
 
-when PONG_ANDROID {
-    @(export)
-    pong_android_game_main :: proc "c" () {
-        run_game()
-    }
-} else {
-    main :: proc() {
-        run_game()
-    }
+main :: proc() {
+    run_game()
 }
 
 
@@ -929,7 +922,7 @@ draw_internet_host :: proc(app: ^App) {
     draw_text_centered("HOST WITH CODE", 18, 40, FG)
     draw_text_centered("Cloudflare discovers your UDP mapping; the rendezvous service only exchanges room data.", 62, 14, MUTED)
 
-    text_field("Rendezvous URL", &app.rendezvous_url, rl.Rectangle{190, 94, 610, 44}, !active)
+    text_field("Rendezvous URL", &app.rendezvous_url, rl.Rectangle{190, 94, 610, 44}, !active, .Uri)
 
     _ = setting_row_int("Winning score", &app.last_game_rules.winning_score, 156, 1, 21, 1, !active)
     _ = setting_row_f32("Ball speed", &app.last_game_rules.ball_speed, 208, 250, 900, 25, !active)
@@ -988,8 +981,8 @@ draw_internet_join :: proc(app: ^App) {
     draw_text_centered("JOIN WITH CODE", 24, 40, FG)
     draw_text_centered("Enter the same HTTP rendezvous URL and the code sent by the host.", 70, 14, MUTED)
 
-    text_field("Rendezvous URL", &app.rendezvous_url, rl.Rectangle{190, 112, 610, 46}, !active)
-    text_field("Room code", &app.room_code, rl.Rectangle{300, 206, 360, 54}, !active)
+    text_field("Rendezvous URL", &app.rendezvous_url, rl.Rectangle{190, 112, 610, 46}, !active, .Uri)
+    text_field("Room code", &app.room_code, rl.Rectangle{300, 206, 360, 54}, !active, .Code)
 
     if button("JOIN ROOM", rl.Rectangle{330, 292, 300, 52}, !active) {
         start_internet_joining(app)
@@ -1084,7 +1077,7 @@ draw_host_setup :: proc(app: ^App) {
     draw_text_centered("HOST GAME", 28, 42, FG)
     draw_text_centered("Choose this match's rules. They are remembered for your next hosted game.", 76, 16, MUTED)
 
-    text_field("Port", &app.port, rl.Rectangle{370, 112, 220, 48}, !controls_disabled)
+    text_field("Port", &app.port, rl.Rectangle{370, 112, 220, 48}, !controls_disabled, .Number)
 
     _ = setting_row_int("Winning score", &app.last_game_rules.winning_score, 178, 1, 21, 1, !controls_disabled)
     _ = setting_row_f32("Ball speed", &app.last_game_rules.ball_speed, 236, 250, 900, 25, !controls_disabled)
@@ -1205,8 +1198,8 @@ draw_join_setup :: proc(app: ^App) {
     draw_text("DIRECT CONNECT", 92, 278, 18, FG)
     draw_text_centered("Use IPv4 or IPv6 for Internet play or when LAN discovery is unavailable.", 302, 14, MUTED)
 
-    text_field("IP address", &app.address, rl.Rectangle{120, 344, 510, 46}, !controls_disabled)
-    text_field("Port", &app.port, rl.Rectangle{650, 344, 120, 46}, !controls_disabled)
+    text_field("IP address", &app.address, rl.Rectangle{120, 344, 510, 46}, !controls_disabled, .Uri)
+    text_field("Port", &app.port, rl.Rectangle{650, 344, 120, 46}, !controls_disabled, .Number)
     if button("PASTE INVITE", rl.Rectangle{780, 344, 130, 46}, !controls_disabled) {
         if paste_invite_from_clipboard(app) {
             app.status_message = "Invite pasted."
