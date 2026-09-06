@@ -216,7 +216,7 @@ lerp_f32 :: proc(a, b, t: f32) -> f32 {
     return a + (b - a) * t
 }
 
-interpolate_render_state :: proc(render: ^Game_State, target: Game_State, dt: f32) {
+interpolate_render_state :: proc(render: ^Game_State, target: Game_State, dt, prediction_seconds: f32) {
     // Scores and terminal state should never visually lag behind a snapshot.
     render.score1 = target.score1
     render.score2 = target.score2
@@ -229,13 +229,37 @@ interpolate_render_state :: proc(render: ^Game_State, target: Game_State, dt: f3
     render.ball_vx = target.ball_vx
     render.ball_vy = target.ball_vy
 
-    world_t := math.clamp(dt * 18.0, f32(0), f32(1))
-    render.p1_y = lerp_f32(render.p1_y, target.p1_y, world_t)
-    render.ball_x = lerp_f32(render.ball_x, target.ball_x, world_t)
-    render.ball_y = lerp_f32(render.ball_y, target.ball_y, world_t)
+    predicted_ball_x := target.ball_x
+    predicted_ball_y := target.ball_y
 
-    // The client predicts its own (right) paddle locally. Correct it more gently
-    // than the remote world so ordinary RTT does not look like visible snapping.
+    // The newest host snapshot is already roughly half an RTT old when it arrives.
+    // Extrapolate the ball only a short, capped distance toward "now"; authoritative
+    // snapshots still correct every frame and scoring remains host-owned.
+    if prediction_seconds > 0 && !target.game_over &&
+       target.countdown_timer <= 0 && target.serve_timer <= 0 {
+        predicted_ball_x += target.ball_vx * prediction_seconds
+        predicted_ball_y += target.ball_vy * prediction_seconds
+
+        if predicted_ball_y - BALL_RADIUS < 0 {
+            predicted_ball_y = BALL_RADIUS + (BALL_RADIUS - predicted_ball_y)
+        } else if predicted_ball_y + BALL_RADIUS > FIELD_H {
+            limit := FIELD_H - BALL_RADIUS
+            predicted_ball_y = limit - (predicted_ball_y - limit)
+        }
+
+        // Never visually invent a score before the host reports it.
+        predicted_ball_x = math.clamp(predicted_ball_x, -BALL_RADIUS, FIELD_W + BALL_RADIUS)
+    }
+
+    // Faster correction than the old dt*18 chase removes a large amount of
+    // additional visual latency while still smoothing ordinary packet jitter.
+    world_t := math.clamp(dt * 30.0, f32(0), f32(1))
+    render.p1_y = lerp_f32(render.p1_y, target.p1_y, world_t)
+    render.ball_x = lerp_f32(render.ball_x, predicted_ball_x, world_t)
+    render.ball_y = lerp_f32(render.ball_y, predicted_ball_y, world_t)
+
+    // The client predicts its own (right) paddle locally. Correct it gently so
+    // normal RTT does not turn into visible snapping.
     local_error := target.p2_y - render.p2_y
     local_t := math.clamp(dt * 7.0, f32(0), f32(1))
     if math.abs(local_error) > 90 {
@@ -247,12 +271,31 @@ interpolate_render_state :: proc(render: ^Game_State, target: Game_State, dt: f3
 local_input_direction :: proc() -> f32 {
     when PONG_ANDROID {
         if rl.GetTouchPointCount() <= 0 { return 0 }
+
+        // Map physical phone coordinates back into the fixed 960x540 game
+        // canvas so the control split follows the actual play field even on
+        // letterboxed screens.
         touch := rl.GetTouchPosition(0)
+        screen_w := f32(rl.GetScreenWidth())
         screen_h := f32(rl.GetScreenHeight())
-        if screen_h <= 0 { return 0 }
-        // Mobile control: touch upper half to move up, lower half to move down.
-        // It is intentionally stateless so host/client prediction remains unchanged.
-        if touch[1] < screen_h * 0.5 { return -1 }
+        if screen_w <= 0 || screen_h <= 0 { return 0 }
+
+        scale_x := screen_w / f32(WINDOW_W)
+        scale_y := screen_h / f32(WINDOW_H)
+        scale := min(scale_x, scale_y)
+        if scale <= 0 { return 0 }
+        offset_x := (screen_w - f32(WINDOW_W) * scale) * 0.5
+        offset_y := (screen_h - f32(WINDOW_H) * scale) * 0.5
+        logical_x := (touch[0] - offset_x) / scale
+        logical_y := (touch[1] - offset_y) / scale
+
+        // The Android-only MENU button lives in this corner. A menu tap must
+        // not leak through as one frame of paddle movement.
+        if logical_x >= f32(WINDOW_W - 125) && logical_y <= 60 { return 0 }
+
+        // Preserve desktop gameplay parity: mobile input is still exactly
+        // -1/0/+1 and therefore uses the same fixed paddle speed as keyboard.
+        if logical_y < f32(FIELD_H) * 0.5 { return -1 }
         return 1
     } else {
         up := rl.IsKeyDown(.W) || rl.IsKeyDown(.UP)

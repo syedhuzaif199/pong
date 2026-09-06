@@ -6,6 +6,7 @@ import "core:fmt"
 import "core:math/rand"
 import "core:net"
 import "core:strings"
+import "core:thread"
 import curl "vendor:curl"
 import rl "vendor:raylib"
 
@@ -34,6 +35,7 @@ Internet_Mode :: enum {
 
 Internet_Phase :: enum {
     Idle,
+    Resolving,
     Stun,
     Creating,
     Waiting,
@@ -47,6 +49,31 @@ Internet_HTTP_Buffer :: struct {
     bytes: [2048]u8,
     length: int,
     overflow: bool,
+}
+
+Internet_Async_Kind :: enum {
+    None,
+    Resolve_Stun,
+    Create,
+    Join,
+    Wait,
+}
+
+Internet_Async_Job :: struct {
+    kind: Internet_Async_Kind,
+
+    base_url: [160]u8,
+    base_url_length: int,
+    path: [32]u8,
+    path_length: int,
+    payload: [768]u8,
+    payload_length: int,
+    timeout_ms: c.long,
+
+    response: [2048]u8,
+    response_length: int,
+    resolved_endpoint: net.Endpoint,
+    ok: bool,
 }
 
 Internet_State :: struct {
@@ -81,6 +108,12 @@ Internet_State :: struct {
 
     status: [192]u8,
     status_length: int,
+
+    // Desktop stores ^thread.Thread here; Android uses a non-nil sentinel while
+    // a Java DNS/HTTPS job is in flight. Keeping this raw avoids pulling the
+    // unsupported core:thread implementation into Android builds.
+    worker: rawptr,
+    async_job: Internet_Async_Job,
 }
 
 internet_http_ready: bool
@@ -123,6 +156,224 @@ internet_curl_write :: proc "c" (contents: [^]byte, size: int, nmemb: int, userp
     return total
 }
 
+internet_wait_for_worker :: proc(s: ^Internet_State) {
+    if s.worker == nil { return }
+
+    when PONG_ANDROID {
+        // Android's Bionic libc does not implement pthread cancellation, which
+        // Odin core:thread currently expects. Android async work therefore lives
+        // in NativeLoader.java. Abandoning increments a generation so a late
+        // Java result cannot be applied to a new Internet_State operation.
+        pong_android_async_abandon()
+    } else {
+        worker := cast(^thread.Thread)s.worker
+        thread.join(worker)
+        thread.destroy(worker)
+    }
+    s.worker = nil
+}
+
+internet_async_worker :: proc(data: rawptr) {
+    // Desktop-only worker body. Android never starts this procedure.
+    job := cast(^Internet_Async_Job)data
+    if job == nil { return }
+
+    #partial switch job.kind {
+    case .Resolve_Stun:
+        ep4, _, err := net.resolve(STUN_DEFAULT_HOST)
+        if err == nil && ep4.address != nil {
+            ep4.port = STUN_DEFAULT_PORT
+            job.resolved_endpoint = ep4
+            job.ok = true
+        }
+
+    case .Create, .Join, .Wait:
+        base_url := string(job.base_url[:job.base_url_length])
+        path := string(job.path[:job.path_length])
+        payload := string(job.payload[:job.payload_length])
+        count, ok := internet_http_post(base_url, path, payload, job.response[:], job.timeout_ms)
+        job.response_length = count
+        job.ok = ok
+
+    case:
+    }
+}
+
+internet_async_start_resolve :: proc(s: ^Internet_State) -> bool {
+    if s.worker != nil { return false }
+    s.async_job = Internet_Async_Job{kind = .Resolve_Stun}
+
+    when PONG_ANDROID {
+        host_c, err := strings.clone_to_cstring(STUN_DEFAULT_HOST, context.temp_allocator)
+        if err != nil { return false }
+        defer delete(host_c, context.temp_allocator)
+
+        if pong_android_async_resolve_start(host_c) == 0 {
+            s.async_job = Internet_Async_Job{}
+            return false
+        }
+        // The actual worker is Java-owned. A pointer to our in-state job is just
+        // a stable non-nil "busy" sentinel and is never dereferenced as a thread.
+        s.worker = &s.async_job
+    } else {
+        worker := thread.create_and_start_with_data(&s.async_job, internet_async_worker)
+        if worker == nil {
+            s.async_job = Internet_Async_Job{}
+            return false
+        }
+        s.worker = worker
+    }
+    return true
+}
+
+internet_async_start_http :: proc(
+    s: ^Internet_State,
+    kind: Internet_Async_Kind,
+    path: string,
+    payload: string,
+    timeout_ms := RENDEZVOUS_HTTP_TIMEOUT_MS,
+) -> bool {
+    if s.worker != nil || kind == .None || kind == .Resolve_Stun { return false }
+
+    job := &s.async_job
+    job^ = Internet_Async_Job{kind = kind, timeout_ms = timeout_ms}
+    internet_copy_text(job.base_url[:], &job.base_url_length, internet_rendezvous_url(s))
+    internet_copy_text(job.path[:], &job.path_length, path)
+    internet_copy_text(job.payload[:], &job.payload_length, payload)
+
+    when PONG_ANDROID {
+        base := internet_rendezvous_url(s)
+        for len(base) > 0 && base[len(base) - 1] == '/' {
+            base = base[:len(base) - 1]
+        }
+
+        url_buf: [512]u8
+        url := fmt.bprintf(url_buf[:], "%s%s", base, path)
+        url_c, url_err := strings.clone_to_cstring(url, context.temp_allocator)
+        if url_err != nil {
+            job^ = Internet_Async_Job{}
+            return false
+        }
+        defer delete(url_c, context.temp_allocator)
+
+        payload_c, payload_err := strings.clone_to_cstring(payload, context.temp_allocator)
+        if payload_err != nil {
+            job^ = Internet_Async_Job{}
+            return false
+        }
+        defer delete(payload_c, context.temp_allocator)
+
+        if pong_android_async_http_start(url_c, payload_c, i32(timeout_ms)) == 0 {
+            job^ = Internet_Async_Job{}
+            return false
+        }
+        s.worker = job
+    } else {
+        worker := thread.create_and_start_with_data(job, internet_async_worker)
+        if worker == nil {
+            job^ = Internet_Async_Job{}
+            return false
+        }
+        s.worker = worker
+    }
+    return true
+}
+
+internet_async_poll :: proc(s: ^Internet_State, n: ^Net_State) {
+    if s.worker == nil { return }
+
+    when PONG_ANDROID {
+        // Java states: 0 idle, 1 running, 2 success, 3 failed.
+        state := pong_android_async_state()
+        if state == 1 { return }
+
+        if state == 2 {
+            count := int(pong_android_async_take_result(
+                cast([^]u8)raw_data(s.async_job.response[:]),
+                i32(len(s.async_job.response)),
+            ))
+            if count > 0 && count <= len(s.async_job.response) {
+                s.async_job.response_length = count
+                if s.async_job.kind == .Resolve_Stun {
+                    text := string(s.async_job.response[:count])
+                    address := net.parse_address(text)
+                    if address != nil {
+                        s.async_job.resolved_endpoint = net.Endpoint{
+                            address = address,
+                            port = STUN_DEFAULT_PORT,
+                        }
+                        s.async_job.ok = true
+                    }
+                } else {
+                    s.async_job.ok = true
+                }
+            }
+        } else {
+            // Also resets a failed/idle Java job. Safe if it was already idle.
+            pong_android_async_abandon()
+        }
+        s.worker = nil
+    } else {
+        worker := cast(^thread.Thread)s.worker
+        if !thread.is_done(worker) { return }
+        thread.join(worker)
+        thread.destroy(worker)
+        s.worker = nil
+    }
+
+    kind := s.async_job.kind
+    ok := s.async_job.ok
+
+    if kind == .Resolve_Stun {
+        if s.phase == .Resolving && ok {
+            if endpoint, endpoint_ok := internet_endpoint_for_socket(n, s.async_job.resolved_endpoint); endpoint_ok {
+                s.stun_server = endpoint
+                s.stun_server_valid = true
+                internet_new_stun_transaction(s)
+                internet_phase_set(s, .Stun)
+                internet_set_status(s, "Discovering your public UDP endpoint with Cloudflare STUN...")
+            }
+        }
+
+        if s.phase == .Resolving {
+            if s.mode == .Host {
+                internet_phase_set(s, .Creating)
+                internet_set_status(s, "Cloudflare STUN lookup unavailable; creating room with direct candidates...")
+            } else {
+                internet_phase_set(s, .Joining)
+                internet_set_status(s, "Cloudflare STUN lookup unavailable; looking up room with direct candidates...")
+            }
+        }
+
+        s.async_job = Internet_Async_Job{}
+        return
+    }
+
+    previous_phase := s.phase
+    if ok && s.async_job.response_length > 0 {
+        packet := string(s.async_job.response[:s.async_job.response_length])
+        internet_handle_rendezvous_response(s, n, packet)
+    }
+
+    // A valid RV_WAITING response intentionally stays in .Waiting; do not
+    // mistake that for a failed/garbled HTTPS response merely because the
+    // phase did not change.
+    if !ok || (kind != .Wait && s.phase == previous_phase) {
+        #partial switch kind {
+        case .Create:
+            if s.phase == .Creating { internet_set_status(s, "Rendezvous HTTPS request failed; retrying...") }
+        case .Join:
+            if s.phase == .Joining { internet_set_status(s, "Rendezvous HTTPS request failed; retrying...") }
+        case .Wait:
+            if s.phase == .Waiting { internet_set_status(s, "Rendezvous HTTPS poll failed; retrying...") }
+        case:
+        }
+    }
+
+    s.last_send_time = rl.GetTime()
+    s.async_job = Internet_Async_Job{}
+}
+
 internet_status :: proc(s: ^Internet_State) -> string {
     return string(s.status[:s.status_length])
 }
@@ -157,6 +408,7 @@ internet_copy_text :: proc(dst: []u8, dst_len: ^int, text: string) {
 }
 
 internet_reset :: proc(s: ^Internet_State) {
+    internet_wait_for_worker(s)
     s^ = Internet_State{}
 }
 
@@ -388,20 +640,15 @@ internet_begin_common :: proc(
     s.request_nonce = new_random_id()
     s.started_time = rl.GetTime()
 
-    stun_server, stun_ok := internet_resolve_stun_server(n)
-    if stun_ok {
-        s.stun_server = stun_server
-        s.stun_server_valid = true
-        internet_new_stun_transaction(s)
-        internet_phase_set(s, .Stun)
-        internet_set_status(s, "Discovering your public UDP endpoint with Cloudflare STUN...")
-    } else {
+    internet_phase_set(s, .Resolving)
+    internet_set_status(s, "Resolving Cloudflare STUN without blocking the game loop...")
+    if !internet_async_start_resolve(s) {
         if mode == .Host {
             internet_phase_set(s, .Creating)
-            internet_set_status(s, "Cloudflare STUN unavailable; creating room with direct candidates...")
+            internet_set_status(s, "Could not start STUN lookup; creating room with direct candidates...")
         } else {
             internet_phase_set(s, .Joining)
-            internet_set_status(s, "Cloudflare STUN unavailable; looking up room with direct candidates...")
+            internet_set_status(s, "Could not start STUN lookup; looking up room with direct candidates...")
         }
     }
     return true
@@ -455,14 +702,15 @@ internet_begin_join :: proc(
 }
 
 internet_cancel :: proc(s: ^Internet_State, n: ^Net_State) {
-    internet_send_leave(s, n)
+    // Do not block the render/audio thread on a best-effort HTTP leave request.
+    // Rendezvous rooms have short TTLs and are cleaned up server-side.
     net_shutdown(n, false)
     internet_reset(s)
 }
 
 internet_detach :: proc(s: ^Internet_State) {
-    // The gameplay socket belongs to Net_State and stays open. The HTTP room
-    // is deleted best-effort and otherwise expires automatically.
+    // The gameplay socket belongs to Net_State and stays open. The rendezvous
+    // room expires server-side; avoiding a synchronous leave keeps transitions smooth.
     internet_reset(s)
 }
 
@@ -590,10 +838,8 @@ internet_send_create :: proc(s: ^Internet_State, n: ^Net_State) -> bool {
         local4,
         local4_port,
     )
-    response: [2048]u8
-    count, ok := internet_http_post(internet_rendezvous_url(s), "/v1/create", payload, response[:])
-    if ok { internet_handle_rendezvous_response(s, n, string(response[:count])) }
-    return ok
+    _ = n
+    return internet_async_start_http(s, .Create, "/v1/create", payload)
 }
 
 internet_send_wait :: proc(s: ^Internet_State, n: ^Net_State) -> bool {
@@ -602,10 +848,8 @@ internet_send_wait :: proc(s: ^Internet_State, n: ^Net_State) -> bool {
     if len(code) == 0 || len(token) == 0 { return false }
     payload_buf: [192]u8
     payload := fmt.bprintf(payload_buf[:], "RV_WAIT|%d|%s|%s", RENDEZVOUS_VERSION, code, token)
-    response: [2048]u8
-    count, ok := internet_http_post(internet_rendezvous_url(s), "/v1/wait", payload, response[:])
-    if ok { internet_handle_rendezvous_response(s, n, string(response[:count])) }
-    return ok
+    _ = n
+    return internet_async_start_http(s, .Wait, "/v1/wait", payload)
 }
 
 internet_send_join :: proc(s: ^Internet_State, n: ^Net_State) -> bool {
@@ -636,10 +880,8 @@ internet_send_join :: proc(s: ^Internet_State, n: ^Net_State) -> bool {
         local4,
         local4_port,
     )
-    response: [2048]u8
-    count, ok := internet_http_post(internet_rendezvous_url(s), "/v1/join", payload, response[:])
-    if ok { internet_handle_rendezvous_response(s, n, string(response[:count])) }
-    return ok
+    _ = n
+    return internet_async_start_http(s, .Join, "/v1/join", payload)
 }
 
 internet_send_leave :: proc(s: ^Internet_State, n: ^Net_State) {
@@ -868,14 +1110,23 @@ internet_receive_udp_control :: proc(s: ^Internet_State, n: ^Net_State) {
 
 internet_update :: proc(s: ^Internet_State, n: ^Net_State) {
     if s.phase == .Idle || s.phase == .Ready || s.phase == .Error || !n.socket_open { return }
-    now := rl.GetTime()
 
-    // UDP work is always non-blocking. HTTP rendezvous requests are small and
-    // happen only during room setup, never during gameplay.
+    // Complete DNS/HTTPS work only after its worker has finished. The worker never
+    // mutates gameplay/network state; responses are applied here on the game thread.
+    internet_async_poll(s, n)
+    if s.phase == .Ready || s.phase == .Error { return }
+
+    now := rl.GetTime()
     internet_receive_udp_control(s, n)
     if s.phase == .Ready || s.phase == .Error { return }
 
     #partial switch s.phase {
+    case .Resolving:
+        if now - s.started_time > INTERNET_ROOM_TIMEOUT {
+            internet_fail(s, "Cloudflare STUN DNS lookup did not complete before the rendezvous timeout.")
+            return
+        }
+
     case .Stun:
         if now - s.last_send_time >= STUN_SEND_INTERVAL {
             internet_send_stun(s, n)
@@ -887,37 +1138,41 @@ internet_update :: proc(s: ^Internet_State, n: ^Net_State) {
         }
 
     case .Creating:
-        if now - s.last_send_time >= RENDEZVOUS_CONTROL_INTERVAL {
-            if !internet_send_create(s, n) && s.phase == .Creating {
-                internet_set_status(s, "Rendezvous HTTPS request failed; retrying...")
+        if s.worker == nil && now - s.last_send_time >= RENDEZVOUS_CONTROL_INTERVAL {
+            if internet_send_create(s, n) {
+                internet_set_status(s, "Creating room over HTTPS...")
+            } else {
+                internet_set_status(s, "Could not start rendezvous HTTPS request; retrying...")
             }
-            s.last_send_time = rl.GetTime()
+            s.last_send_time = now
         }
-        if rl.GetTime() - s.started_time > INTERNET_ROOM_TIMEOUT {
+        if now - s.started_time > INTERNET_ROOM_TIMEOUT {
             internet_fail(s, "Could not create the room before the rendezvous timeout.")
             return
         }
 
     case .Joining:
-        if now - s.last_send_time >= RENDEZVOUS_CONTROL_INTERVAL {
-            if !internet_send_join(s, n) && s.phase == .Joining {
-                internet_set_status(s, "Rendezvous HTTPS request failed; retrying...")
+        if s.worker == nil && now - s.last_send_time >= RENDEZVOUS_CONTROL_INTERVAL {
+            if internet_send_join(s, n) {
+                internet_set_status(s, "Looking up room over HTTPS...")
+            } else {
+                internet_set_status(s, "Could not start rendezvous HTTPS request; retrying...")
             }
-            s.last_send_time = rl.GetTime()
+            s.last_send_time = now
         }
-        if rl.GetTime() - s.started_time > INTERNET_ROOM_TIMEOUT {
+        if now - s.started_time > INTERNET_ROOM_TIMEOUT {
             internet_fail(s, "Could not join the room before the rendezvous timeout.")
             return
         }
 
     case .Waiting:
-        if now - s.last_send_time >= RENDEZVOUS_CONTROL_INTERVAL {
-            if !internet_send_wait(s, n) && s.phase == .Waiting {
-                internet_set_status(s, "Rendezvous HTTPS poll failed; retrying...")
+        if s.worker == nil && now - s.last_send_time >= RENDEZVOUS_CONTROL_INTERVAL {
+            if !internet_send_wait(s, n) {
+                internet_set_status(s, "Could not start rendezvous HTTPS poll; retrying...")
             }
-            s.last_send_time = rl.GetTime()
+            s.last_send_time = now
         }
-        if rl.GetTime() - s.started_time > INTERNET_ROOM_TIMEOUT {
+        if now - s.started_time > INTERNET_ROOM_TIMEOUT {
             internet_fail(s, "Room expired before peer discovery completed.")
             return
         }

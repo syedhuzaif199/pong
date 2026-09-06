@@ -72,6 +72,12 @@ App :: struct {
     match_start_timer: f32,
 
     display_change_pending: bool,
+
+    saved_preferences: App_Settings,
+    saved_game_rules: Game_Rules,
+    config_autosave_timer: f32,
+
+    mobile_control_hint_timer: f32,
 }
 
 prepare_runtime_directory :: proc() {
@@ -122,6 +128,8 @@ run_game :: proc() {
     app.preferences = default_app_settings()
     app.last_game_rules = default_game_rules()
     load_config(&app.preferences, &app.last_game_rules)
+    app.saved_preferences = app.preferences
+    app.saved_game_rules = app.last_game_rules
     app.network_rules = app.last_game_rules
 
     app.address = app.preferences.last_join_address
@@ -155,6 +163,7 @@ run_game :: proc() {
 
         frame_screen := app.screen
         update_app(&app, dt)
+        update_config_autosave(&app, dt)
         if app.screen != frame_screen { app.transition_alpha = 1 }
 
         if audio_ready {
@@ -181,11 +190,10 @@ run_game :: proc() {
         ui_end_frame()
     }
 
-    save_config(app.preferences, app.last_game_rules)
+    save_app_config(&app)
     discovery_host_shutdown(&app.discovery_host)
     discovery_client_shutdown(&app.discovery_client)
-    internet_send_leave(&app.internet, &app.net)
-    net_shutdown(&app.net)
+    internet_cancel(&app.internet, &app.net)
     rl.UnloadRenderTexture(canvas)
 
     if audio_ready {
@@ -200,6 +208,32 @@ main :: proc() {
     run_game()
 }
 
+
+save_app_config :: proc(app: ^App) {
+    if save_config(app.preferences, app.last_game_rules) {
+        app.saved_preferences = app.preferences
+        app.saved_game_rules = app.last_game_rules
+        app.config_autosave_timer = 0
+    }
+}
+
+update_config_autosave :: proc(app: ^App, dt: f32) {
+    if config_values_equal(app.preferences, app.saved_preferences, app.last_game_rules, app.saved_game_rules) {
+        app.config_autosave_timer = 0
+        return
+    }
+
+    app.config_autosave_timer += dt
+    if app.config_autosave_timer >= 0.20 {
+        save_app_config(app)
+    }
+}
+
+begin_mobile_control_hint :: proc(app: ^App) {
+    when PONG_ANDROID {
+        app.mobile_control_hint_timer = 6.0
+    }
+}
 
 begin_match_start_fade :: proc(app: ^App) {
     if app.match_start_pending { return }
@@ -240,7 +274,7 @@ update_app :: proc(app: ^App, dt: f32) {
         if alt_down && rl.IsKeyPressed(.ENTER) {
             app.preferences.fullscreen = !app.preferences.fullscreen
             app.display_change_pending = true
-            save_config(app.preferences, app.last_game_rules)
+            save_app_config(app)
         }
 
         if app.display_change_pending {
@@ -282,7 +316,7 @@ update_app :: proc(app: ^App, dt: f32) {
         }
         if platform_window_back_pressed() {
             sanitize_player_name(&app.preferences.player_name)
-            save_config(app.preferences, app.last_game_rules)
+            save_app_config(app)
             app.screen = .Main_Menu
         }
 
@@ -364,6 +398,7 @@ update_join_setup :: proc(app: ^App) {
             app.paused = false
             app.pause_settings = false
             app.countdown_sound_stage = 0
+            begin_mobile_control_hint(app)
             app.screen = .Game
             return
         }
@@ -406,7 +441,7 @@ update_join_setup :: proc(app: ^App) {
 
 persist_rendezvous_settings :: proc(app: ^App) {
     app.preferences.rendezvous_url = app.rendezvous_url
-    save_config(app.preferences, app.last_game_rules)
+    save_app_config(app)
 }
 
 start_internet_hosting :: proc(app: ^App) {
@@ -506,7 +541,6 @@ update_internet_host :: proc(app: ^App) {
 
     connected, _ := net_receive_host(&app.net, app.network_rules, &app.game)
     if connected {
-        internet_send_leave(&app.internet, &app.net)
         internet_detach(&app.internet)
         app.render_game = app.game
         app.target_game = app.game
@@ -560,13 +594,13 @@ update_internet_join :: proc(app: ^App) {
     }
 
     if got_state || got_lobby {
-        internet_send_leave(&app.internet, &app.net)
         internet_detach(&app.internet)
         if got_state {
             app.render_game = app.target_game
             app.paused = false
             app.pause_settings = false
             app.countdown_sound_stage = 0
+            begin_mobile_control_hint(app)
             app.screen = .Game
         } else {
             app.screen = .Lobby
@@ -642,7 +676,8 @@ update_lobby :: proc(app: ^App, dt: f32) {
                 app.paused = false
                 app.pause_settings = false
                 app.countdown_sound_stage = 0
-                app.screen = .Game
+                begin_mobile_control_hint(app)
+            app.screen = .Game
             }
         } else {
             cancel_match_start_fade(app)
@@ -657,6 +692,7 @@ update_lobby :: proc(app: ^App, dt: f32) {
             app.paused = false
             app.pause_settings = false
             app.countdown_sound_stage = 0
+            begin_mobile_control_hint(app)
             app.screen = .Game
             return
         }
@@ -690,10 +726,15 @@ update_lobby :: proc(app: ^App, dt: f32) {
 }
 
 update_game :: proc(app: ^App, dt: f32) {
+    when PONG_ANDROID {
+        if !app.paused && app.mobile_control_hint_timer > 0 {
+            app.mobile_control_hint_timer = max(f32(0), app.mobile_control_hint_timer - dt)
+        }
+    }
     if platform_window_back_pressed() {
         if app.pause_settings {
             app.pause_settings = false
-            save_config(app.preferences, app.last_game_rules)
+            save_app_config(app)
         } else {
             app.paused = !app.paused
         }
@@ -750,6 +791,7 @@ update_game :: proc(app: ^App, dt: f32) {
                     clear_rematch_state(&app.net)
                     send_rematch_state(&app.net)
                     begin_match_countdown(&app.game)
+                    begin_mobile_control_hint(app)
                     app.render_game = app.game
                     app.paused = false
                     app.pause_settings = false
@@ -805,7 +847,7 @@ update_game :: proc(app: ^App, dt: f32) {
         }
 
         net_send_ping_if_due(&app.net)
-        interpolate_render_state(&app.render_game, app.target_game, dt)
+        interpolate_render_state(&app.render_game, app.target_game, dt, client_prediction_horizon(&app.net))
 
         if !app.paused && app.render_game.countdown_timer <= 0 && !app.render_game.game_over {
             move_paddle(&app.render_game.p2_y, direction, app.network_rules.paddle_speed, dt)
@@ -1063,10 +1105,12 @@ draw_settings :: proc(app: ^App) {
         app.preferences.show_net_stats = !app.preferences.show_net_stats
     }
 
-    draw_text("Alt+Enter toggles fullscreen anywhere", 42, 508, 14, MUTED)
+    when !PONG_ANDROID {
+        draw_text("Alt+Enter toggles fullscreen anywhere", 42, 508, 14, MUTED)
+    }
     if button("BACK", rl.Rectangle{360, 482, 240, 42}) {
         sanitize_player_name(&app.preferences.player_name)
-        save_config(app.preferences, app.last_game_rules)
+        save_app_config(app)
         app.screen = .Main_Menu
     }
 }
@@ -1282,7 +1326,7 @@ start_joining_address :: proc(app: ^App, address_text: string, port: int, rememb
     if remember {
         text_field_set(&app.preferences.last_join_address, address_text)
         app.preferences.last_join_port = port
-        save_config(app.preferences, app.last_game_rules)
+        save_app_config(app)
     }
 
     sanitize_player_name(&app.preferences.player_name)
@@ -1460,7 +1504,7 @@ start_hosting :: proc(app: ^App) {
     }
 
     app.network_rules = app.last_game_rules
-    save_config(app.preferences, app.last_game_rules)
+    save_app_config(app)
 
     sanitize_player_name(&app.preferences.player_name)
     if !net_host(&app.net, port, text_field_string(&app.preferences.player_name)) {
@@ -1521,7 +1565,13 @@ draw_game_screen :: proc(app: ^App) {
     names_buf: [160]u8
     names := fmt.bprintf(names_buf[:], "%s  vs  %s", host_name, client_name)
     draw_text_centered(names, 78, 16, MUTED)
-    draw_text("ESC: menu", WINDOW_W - 108, 14, 16, MUTED)
+    when PONG_ANDROID {
+        if !app.paused && button("MENU", rl.Rectangle{WINDOW_W - 112, 12, 94, 34}) {
+            app.paused = true
+        }
+    } else {
+        draw_text("ESC: menu", WINDOW_W - 108, 14, 16, MUTED)
+    }
 
     if app.preferences.show_net_stats {
         loss := packet_loss_percent(&app.net)
@@ -1560,6 +1610,20 @@ draw_game_screen :: proc(app: ^App) {
         draw_text_centered("GO!", 216, 80, GOOD)
     } else if g.serve_timer > 0 && !g.game_over {
         draw_text_centered("GET READY", WINDOW_H / 2 - 16, 24, MUTED)
+    }
+
+    when PONG_ANDROID {
+        if app.mobile_control_hint_timer > 0 && !app.paused && !g.game_over {
+            fade := min(f32(1), app.mobile_control_hint_timer / 1.25)
+            alpha := u8(f32(175) * fade)
+            hint_colour := rl.Color{143, 153, 170, alpha}
+            hint_bg := rl.Color{5, 6, 9, u8(f32(92) * fade)}
+
+            rl.DrawRectangle(245, 120, 470, 42, hint_bg)
+            draw_text_centered("HOLD THE UPPER HALF TO MOVE UP", 131, 17, hint_colour)
+            rl.DrawRectangle(245, 378, 470, 42, hint_bg)
+            draw_text_centered("HOLD THE LOWER HALF TO MOVE DOWN", 389, 17, hint_colour)
+        }
     }
 
     if g.game_over {
@@ -1672,7 +1736,7 @@ leave_current_match :: proc(app: ^App) {
     app.paused = false
     app.pause_settings = false
     app.countdown_sound_stage = 0
-    save_config(app.preferences, app.last_game_rules)
+    save_app_config(app)
     app.screen = .Online
 }
 
@@ -1697,7 +1761,11 @@ draw_pause_overlay :: proc(app: ^App) {
         leave_current_match(app)
     }
 
-    draw_text_centered("ESC resumes", 430, 15, MUTED)
+    when PONG_ANDROID {
+        draw_text_centered("Tap RESUME to return to the match", 430, 15, MUTED)
+    } else {
+        draw_text_centered("ESC resumes", 430, 15, MUTED)
+    }
 }
 
 draw_pause_settings :: proc(app: ^App) {
@@ -1736,7 +1804,7 @@ draw_pause_settings :: proc(app: ^App) {
     }
 
     if button("BACK", rl.Rectangle{360, 460, 240, 44}) {
-        save_config(app.preferences, app.last_game_rules)
+        save_app_config(app)
         app.pause_settings = false
     }
 }

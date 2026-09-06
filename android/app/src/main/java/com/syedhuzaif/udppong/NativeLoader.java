@@ -2,6 +2,8 @@ package com.syedhuzaif.udppong;
 
 import android.app.NativeActivity;
 import android.content.Context;
+import android.content.SharedPreferences;
+import android.util.Log;
 import android.os.Bundle;
 import android.text.Editable;
 import android.text.InputFilter;
@@ -19,6 +21,8 @@ import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.Inet4Address;
+import java.net.InetAddress;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 
@@ -30,6 +34,23 @@ public final class NativeLoader extends NativeActivity {
 
     private EditText textInput;
     private volatile String nativeText = "";
+
+    private static final String PREFS_NAME = "udp_pong";
+    private static final String PREFS_CONFIG_KEY = "pong_cfg";
+    private static final String PREFS_LOG_TAG = "UDPPongPrefs";
+
+    private static final int ASYNC_IDLE = 0;
+    private static final int ASYNC_RUNNING = 1;
+    private static final int ASYNC_SUCCESS = 2;
+    private static final int ASYNC_FAILED = 3;
+
+    // Only one rendezvous/DNS job is needed at a time. The native Internet_State
+    // already serializes create/join/wait operations. generation prevents a late
+    // result from an abandoned request from contaminating a newer room attempt.
+    private final Object asyncLock = new Object();
+    private int asyncGeneration = 0;
+    private volatile int asyncState = ASYNC_IDLE;
+    private volatile String asyncResult = null;
 
     static {
         System.loadLibrary("main");
@@ -127,8 +148,115 @@ public final class NativeLoader extends NativeActivity {
         return nativeText;
     }
 
-    // Called synchronously from the native game thread. The rendezvous protocol
-    // uses tiny text bodies, so keeping this bridge deliberately small is fine.
+    // Android preferences use the platform's private persistent storage instead of
+    // relying on Odin core:os file I/O. The payload remains the same pong.cfg text
+    // used by desktop, so parsing/formatting stays shared in Odin.
+    public String loadConfigText() {
+        SharedPreferences prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
+        String text = prefs.getString(PREFS_CONFIG_KEY, "");
+        if (text == null) text = "";
+        Log.i(PREFS_LOG_TAG, "load bytes=" + text.getBytes(StandardCharsets.UTF_8).length);
+        return text;
+    }
+
+    public boolean saveConfigText(String text) {
+        if (text == null) text = "";
+        boolean ok = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PREFS_CONFIG_KEY, text)
+            .commit();
+        Log.i(PREFS_LOG_TAG, "save bytes=" + text.getBytes(StandardCharsets.UTF_8).length + " ok=" + ok);
+        return ok;
+    }
+
+    private void publishAsyncResult(int generation, String result) {
+        synchronized (asyncLock) {
+            if (generation != asyncGeneration || asyncState != ASYNC_RUNNING) return;
+            asyncResult = result;
+            asyncState = (result != null && !result.isEmpty()) ? ASYNC_SUCCESS : ASYNC_FAILED;
+        }
+    }
+
+    public boolean beginAsyncResolve(final String host) {
+        if (host == null || host.isEmpty()) return false;
+
+        final int generation;
+        synchronized (asyncLock) {
+            if (asyncState == ASYNC_RUNNING) return false;
+            generation = ++asyncGeneration;
+            asyncResult = null;
+            asyncState = ASYNC_RUNNING;
+        }
+
+        Thread worker = new Thread(() -> {
+            String result = null;
+            try {
+                InetAddress[] addresses = InetAddress.getAllByName(host);
+                InetAddress chosen = null;
+
+                // The Pong STUN parser currently consumes IPv4 XOR-MAPPED-ADDRESS.
+                // Prefer an IPv4 Cloudflare endpoint just like the desktop path.
+                for (InetAddress address : addresses) {
+                    if (address instanceof Inet4Address) {
+                        chosen = address;
+                        break;
+                    }
+                }
+                if (chosen == null && addresses.length > 0) chosen = addresses[0];
+                if (chosen != null) result = chosen.getHostAddress();
+            } catch (Exception ignored) {
+            }
+            publishAsyncResult(generation, result);
+        }, "Pong-STUN-DNS");
+        worker.setDaemon(true);
+        worker.start();
+        return true;
+    }
+
+    public boolean beginAsyncHttpPost(final String url, final String payload, final int timeoutMs) {
+        if (url == null || url.isEmpty() || payload == null) return false;
+
+        final int generation;
+        synchronized (asyncLock) {
+            if (asyncState == ASYNC_RUNNING) return false;
+            generation = ++asyncGeneration;
+            asyncResult = null;
+            asyncState = ASYNC_RUNNING;
+        }
+
+        Thread worker = new Thread(() ->
+            publishAsyncResult(generation, httpPost(url, payload, timeoutMs)),
+            "Pong-Rendezvous-HTTP"
+        );
+        worker.setDaemon(true);
+        worker.start();
+        return true;
+    }
+
+    public int getAsyncState() {
+        return asyncState;
+    }
+
+    public String takeAsyncResult() {
+        synchronized (asyncLock) {
+            if (asyncState != ASYNC_SUCCESS) return null;
+            String result = asyncResult;
+            asyncResult = null;
+            asyncState = ASYNC_IDLE;
+            return result;
+        }
+    }
+
+    public void abandonAsync() {
+        synchronized (asyncLock) {
+            ++asyncGeneration;
+            asyncResult = null;
+            asyncState = ASYNC_IDLE;
+        }
+    }
+
+    // Called by the Java worker thread. The rendezvous protocol uses tiny text
+    // bodies, so keeping this bridge deliberately small is fine.
     public String httpPost(String urlText, String payload, int timeoutMs) {
         HttpURLConnection connection = null;
         try {

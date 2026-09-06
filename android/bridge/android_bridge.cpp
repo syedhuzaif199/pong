@@ -35,6 +35,68 @@ extern "C" int pong_android_internal_data_path(unsigned char *output, int output
     return n;
 }
 
+extern "C" int pong_android_config_load(unsigned char *output, int output_capacity) {
+    if (!output || output_capacity <= 0) return 0;
+
+    JNIEnv *env = nullptr;
+    JavaVM *vm = nullptr;
+    bool did_attach = false;
+    if (!attach(&env, &vm, &did_attach)) return 0;
+
+    android_app *app = GetAndroidApp();
+    jobject activity = app->activity->clazz;
+    jclass cls = env->GetObjectClass(activity);
+    jmethodID method = env->GetMethodID(cls, "loadConfigText", "()Ljava/lang/String;");
+
+    int result = 0;
+    if (method) {
+        auto text = (jstring)env->CallObjectMethod(activity, method);
+        if (!env->ExceptionCheck() && text) {
+            const char *chars = env->GetStringUTFChars(text, nullptr);
+            if (chars) {
+                const int len = (int)std::strlen(chars);
+                const int n = (len < output_capacity) ? len : output_capacity;
+                if (n > 0) std::memcpy(output, chars, (size_t)n);
+                result = n;
+                env->ReleaseStringUTFChars(text, chars);
+            }
+            env->DeleteLocalRef(text);
+        }
+    }
+
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    env->DeleteLocalRef(cls);
+    if (did_attach) vm->DetachCurrentThread();
+    return result;
+}
+
+extern "C" int pong_android_config_save(const char *text) {
+    if (!text) return 0;
+
+    JNIEnv *env = nullptr;
+    JavaVM *vm = nullptr;
+    bool did_attach = false;
+    if (!attach(&env, &vm, &did_attach)) return 0;
+
+    android_app *app = GetAndroidApp();
+    jobject activity = app->activity->clazz;
+    jclass cls = env->GetObjectClass(activity);
+    jmethodID method = env->GetMethodID(cls, "saveConfigText", "(Ljava/lang/String;)Z");
+
+    int result = 0;
+    if (method) {
+        jstring value = env->NewStringUTF(text);
+        jboolean ok = env->CallBooleanMethod(activity, method, value);
+        if (!env->ExceptionCheck() && ok == JNI_TRUE) result = 1;
+        env->DeleteLocalRef(value);
+    }
+
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    env->DeleteLocalRef(cls);
+    if (did_attach) vm->DetachCurrentThread();
+    return result;
+}
+
 extern "C" void pong_android_begin_text_input(const char *initial_text, int kind) {
     JNIEnv *env = nullptr;
     JavaVM *vm = nullptr;
@@ -156,4 +218,143 @@ extern "C" int pong_android_http_post(
     env->DeleteLocalRef(cls);
     if (did_attach) vm->DetachCurrentThread();
     return result;
+}
+
+extern "C" int pong_android_async_resolve_start(const char *host) {
+    if (!host || !host[0]) return 0;
+
+    JNIEnv *env = nullptr;
+    JavaVM *vm = nullptr;
+    bool did_attach = false;
+    if (!attach(&env, &vm, &did_attach)) return 0;
+
+    android_app *app = GetAndroidApp();
+    jobject activity = app->activity->clazz;
+    jclass cls = env->GetObjectClass(activity);
+    jmethodID method = env->GetMethodID(cls, "beginAsyncResolve", "(Ljava/lang/String;)Z");
+
+    int result = 0;
+    if (method) {
+        jstring jhost = env->NewStringUTF(host);
+        result = env->CallBooleanMethod(activity, method, jhost) == JNI_TRUE ? 1 : 0;
+        env->DeleteLocalRef(jhost);
+    }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        result = 0;
+    }
+    env->DeleteLocalRef(cls);
+    if (did_attach) vm->DetachCurrentThread();
+    return result;
+}
+
+extern "C" int pong_android_async_http_start(
+    const char *url,
+    const char *payload,
+    int timeout_ms
+) {
+    if (!url || !url[0] || !payload) return 0;
+
+    JNIEnv *env = nullptr;
+    JavaVM *vm = nullptr;
+    bool did_attach = false;
+    if (!attach(&env, &vm, &did_attach)) return 0;
+
+    android_app *app = GetAndroidApp();
+    jobject activity = app->activity->clazz;
+    jclass cls = env->GetObjectClass(activity);
+    jmethodID method = env->GetMethodID(
+        cls,
+        "beginAsyncHttpPost",
+        "(Ljava/lang/String;Ljava/lang/String;I)Z"
+    );
+
+    int result = 0;
+    if (method) {
+        jstring jurl = env->NewStringUTF(url);
+        jstring jpayload = env->NewStringUTF(payload);
+        result = env->CallBooleanMethod(activity, method, jurl, jpayload, (jint)timeout_ms) == JNI_TRUE ? 1 : 0;
+        env->DeleteLocalRef(jurl);
+        env->DeleteLocalRef(jpayload);
+    }
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        result = 0;
+    }
+    env->DeleteLocalRef(cls);
+    if (did_attach) vm->DetachCurrentThread();
+    return result;
+}
+
+extern "C" int pong_android_async_state(void) {
+    JNIEnv *env = nullptr;
+    JavaVM *vm = nullptr;
+    bool did_attach = false;
+    if (!attach(&env, &vm, &did_attach)) return 0;
+
+    android_app *app = GetAndroidApp();
+    jobject activity = app->activity->clazz;
+    jclass cls = env->GetObjectClass(activity);
+    jmethodID method = env->GetMethodID(cls, "getAsyncState", "()I");
+
+    int result = method ? (int)env->CallIntMethod(activity, method) : 0;
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        result = 0;
+    }
+    env->DeleteLocalRef(cls);
+    if (did_attach) vm->DetachCurrentThread();
+    return result;
+}
+
+extern "C" int pong_android_async_take_result(unsigned char *output, int output_capacity) {
+    if (!output || output_capacity <= 0) return 0;
+
+    JNIEnv *env = nullptr;
+    JavaVM *vm = nullptr;
+    bool did_attach = false;
+    if (!attach(&env, &vm, &did_attach)) return 0;
+
+    android_app *app = GetAndroidApp();
+    jobject activity = app->activity->clazz;
+    jclass cls = env->GetObjectClass(activity);
+    jmethodID method = env->GetMethodID(cls, "takeAsyncResult", "()Ljava/lang/String;");
+
+    int result = 0;
+    if (method) {
+        auto text = (jstring)env->CallObjectMethod(activity, method);
+        if (!env->ExceptionCheck() && text) {
+            const char *chars = env->GetStringUTFChars(text, nullptr);
+            if (chars) {
+                const int len = (int)std::strlen(chars);
+                if (len > 0 && len <= output_capacity) {
+                    std::memcpy(output, chars, (size_t)len);
+                    result = len;
+                }
+                env->ReleaseStringUTFChars(text, chars);
+            }
+            env->DeleteLocalRef(text);
+        }
+    }
+
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    env->DeleteLocalRef(cls);
+    if (did_attach) vm->DetachCurrentThread();
+    return result;
+}
+
+extern "C" void pong_android_async_abandon(void) {
+    JNIEnv *env = nullptr;
+    JavaVM *vm = nullptr;
+    bool did_attach = false;
+    if (!attach(&env, &vm, &did_attach)) return;
+
+    android_app *app = GetAndroidApp();
+    jobject activity = app->activity->clazz;
+    jclass cls = env->GetObjectClass(activity);
+    jmethodID method = env->GetMethodID(cls, "abandonAsync", "()V");
+    if (method) env->CallVoidMethod(activity, method);
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    env->DeleteLocalRef(cls);
+    if (did_attach) vm->DetachCurrentThread();
 }

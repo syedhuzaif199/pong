@@ -64,6 +64,7 @@ Net_State :: struct {
     remote_rematch: bool,
 
     last_recv_time: f64,
+    last_state_recv_time: f64,
     last_stream_send_time: f64,
     last_hello_time: f64,
     join_started_time: f64,
@@ -714,7 +715,9 @@ net_receive_client :: proc(n: ^Net_State, rules: ^Game_Rules, target: ^Game_Stat
             state, seq, state_ok := parse_state(rest)
             if state_ok && record_stream_seq(n, seq) {
                 n.packets_recv += 1
-                n.last_recv_time = rl.GetTime()
+                state_time := rl.GetTime()
+                n.last_recv_time = state_time
+                n.last_state_recv_time = state_time
                 target^ = state
                 n.connected = true
                 got_state = true
@@ -750,6 +753,25 @@ net_receive_client :: proc(n: ^Net_State, rules: ^Game_Rules, target: ^Game_Stat
         }
     }
     return
+}
+
+client_prediction_horizon :: proc(n: ^Net_State) -> f32 {
+    if n.last_state_recv_time <= 0 { return 0 }
+
+    age := rl.GetTime() - n.last_state_recv_time
+    if age < 0 { age = 0 }
+
+    // Approximate how old the authoritative snapshot is when it reaches us:
+    // half the smoothed RTT for transit plus time since this packet arrived.
+    transit: f64 = 0
+    if n.rtt_valid {
+        transit = f64(n.rtt_smoothed_ms) * 0.0005
+    }
+
+    horizon := age + transit
+    if horizon < 0 { horizon = 0 }
+    if horizon > 0.055 { horizon = 0.055 }
+    return f32(horizon)
 }
 
 client_send_handshake_if_due :: proc(n: ^Net_State) {

@@ -55,6 +55,8 @@ RAYLIB_LIB="$(find "$RAYLIB_BUILD" -name libraylib.a -print -quit)"
 [[ -n "$RAYLIB_LIB" ]] || { echo "Could not locate libraylib.a after raylib build" >&2; exit 1; }
 
 PONG_OBJ="$BUILD_DIR/pong_android.o"
+export ODIN_ANDROID_NDK="$ANDROID_NDK_HOME"
+export ODIN_ANDROID_SDK="$ANDROID_HOME"
 echo "Compiling Odin for Android ARM64..."
 (
   cd "$ROOT"
@@ -65,6 +67,7 @@ echo "Compiling Odin for Android ARM64..."
     -reloc-mode:pic \
     -define:PONG_ANDROID=true \
     -o:speed \
+    -use-single-module \
     -out:"$PONG_OBJ"
 )
 
@@ -74,6 +77,7 @@ OUT_SO="$JNI_DIR/libmain.so"
 
 echo "Linking libmain.so..."
 "$CXX" \
+  -static-libstdc++ \
   -shared \
   -Wl,-soname,libmain.so \
   -Wl,--no-undefined \

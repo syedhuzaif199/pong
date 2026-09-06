@@ -65,6 +65,31 @@ App_Settings :: struct {
     rendezvous_url: Text_Field,
 }
 
+
+config_text_equal :: proc(a, b: Text_Field) -> bool {
+    if a.length != b.length { return false }
+    for i in 0..<a.length {
+        if a.bytes[i] != b.bytes[i] { return false }
+    }
+    return true
+}
+
+config_values_equal :: proc(a, b: App_Settings, rules_a, rules_b: Game_Rules) -> bool {
+    return config_text_equal(a.player_name, b.player_name) &&
+           a.music_volume == b.music_volume &&
+           a.music_muted == b.music_muted &&
+           a.sfx_volume == b.sfx_volume &&
+           a.sfx_muted == b.sfx_muted &&
+           a.fullscreen == b.fullscreen &&
+           a.show_net_stats == b.show_net_stats &&
+           config_text_equal(a.last_join_address, b.last_join_address) &&
+           a.last_join_port == b.last_join_port &&
+           config_text_equal(a.rendezvous_url, b.rendezvous_url) &&
+           rules_a.winning_score == rules_b.winning_score &&
+           rules_a.ball_speed == rules_b.ball_speed &&
+           rules_a.paddle_speed == rules_b.paddle_speed
+}
+
 default_app_settings :: proc() -> App_Settings {
     settings := App_Settings{
         music_volume = 35,
@@ -90,19 +115,8 @@ sanitize_player_name :: proc(field: ^Text_Field) {
     }
 }
 
-load_config :: proc(settings: ^App_Settings, last_rules: ^Game_Rules) {
-    path := config_file_path()
-    data, err := os.read_entire_file_from_path(path, context.temp_allocator)
-    if err != nil && path != CONFIG_FILE {
-        // Older builds stored pong.cfg beside the executable. Read that once as
-        // a migration fallback; the next save writes to the platform config dir.
-        data, err = os.read_entire_file_from_path(CONFIG_FILE, context.temp_allocator)
-    }
-    if err != nil {
-        return
-    }
-
-    rest := string(data)
+parse_config_text :: proc(data: string, settings: ^App_Settings, last_rules: ^Game_Rules) {
+    rest := data
     for len(rest) > 0 {
         line, _ := strings.split_iterator(&rest, "\n")
         if len(line) == 0 {
@@ -151,7 +165,6 @@ load_config :: proc(settings: ^App_Settings, last_rules: ^Game_Rules) {
                 settings.show_net_stats = parsed != 0
             }
         case "last_join_ipv6", "last_join_address":
-            // Accept the old v1.0 key as a migration path.
             if net.parse_address(value) != nil {
                 text_field_set(&settings.last_join_address, value)
             }
@@ -165,8 +178,6 @@ load_config :: proc(settings: ^App_Settings, last_rules: ^Game_Rules) {
                 text_field_set(&settings.rendezvous_url, value)
             }
         case "rendezvous_host", "rendezvous_port":
-            // v1.2 changed rendezvous from a custom UDP endpoint to an HTTP(S)
-            // service URL. Old host/port values cannot be migrated reliably.
         case "last_winning_score":
             parsed, parse_ok := strconv.parse_int(value)
             if parse_ok && parsed >= 1 && parsed <= 21 {
@@ -186,7 +197,30 @@ load_config :: proc(settings: ^App_Settings, last_rules: ^Game_Rules) {
     }
 }
 
-save_config :: proc(settings: App_Settings, last_rules: Game_Rules) {
+load_config :: proc(settings: ^App_Settings, last_rules: ^Game_Rules) {
+    when PONG_ANDROID {
+        buf: [2048]u8
+        config_text := platform_config_load(buf[:])
+        if len(config_text) > 0 {
+            parse_config_text(config_text, settings, last_rules)
+        }
+    } else {
+        path := config_file_path()
+        file_data, err := os.read_entire_file_from_path(path, context.temp_allocator)
+        if err != nil && path != CONFIG_FILE {
+            // Older builds stored pong.cfg beside the executable. Read that once as
+            // a migration fallback; the next save writes to the platform config dir.
+            file_data, err = os.read_entire_file_from_path(CONFIG_FILE, context.temp_allocator)
+        }
+        if err != nil {
+            return
+        }
+
+        parse_config_text(string(file_data), settings, last_rules)
+    }
+}
+
+save_config :: proc(settings: App_Settings, last_rules: Game_Rules) -> bool {
     muted: int = 0
     sfx_muted: int = 0
     fullscreen: int = 0
@@ -226,5 +260,10 @@ save_config :: proc(settings: App_Settings, last_rules: Game_Rules) {
         last_rules.ball_speed,
         last_rules.paddle_speed,
     )
-    _ = os.write_entire_file_from_string(config_file_path(), text)
+    when PONG_ANDROID {
+        return platform_config_save(text)
+    } else {
+        _ = os.write_entire_file_from_string(config_file_path(), text)
+        return true
+    }
 }
