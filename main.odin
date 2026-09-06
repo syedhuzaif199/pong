@@ -6,7 +6,7 @@ import "core:os"
 import "core:strconv"
 import rl "vendor:raylib"
 
-APP_VERSION :: "v1.1.0"
+APP_VERSION :: "v1.2.0"
 PRE_COUNTDOWN_FADE_TIME :: f32(0.40)
 LAN_IPV4_FALLBACK_DELAY :: f64(0.75)
 
@@ -15,6 +15,8 @@ Screen :: enum {
     Online,
     Host_Setup,
     Join_Setup,
+    Internet_Host,
+    Internet_Join,
     Lobby,
     Settings,
     Game,
@@ -37,6 +39,10 @@ App :: struct {
 
     address: Text_Field,
     port: Text_Field,
+    rendezvous_url: Text_Field,
+    room_code: Text_Field,
+
+    internet: Internet_State,
 
     lan_fallback_ipv4: [32]u8,
     lan_fallback_ipv4_length: int,
@@ -44,6 +50,7 @@ App :: struct {
     lan_fallback_used: bool,
     online_status: Online_Status,
     status_message: string,
+    connection_origin: Screen,
 
     net: Net_State,
     discovery_host: Discovery_Host,
@@ -90,6 +97,8 @@ prepare_runtime_directory :: proc() {
 
 main :: proc() {
     prepare_runtime_directory()
+    http_ready := internet_http_init()
+    defer if http_ready { internet_http_shutdown() }
 
     rl.SetConfigFlags({.VSYNC_HINT, .WINDOW_RESIZABLE})
     rl.InitWindow(WINDOW_W, WINDOW_H, "UDP Pong")
@@ -111,6 +120,8 @@ main :: proc() {
     port_buf: [32]u8
     port_text := fmt.bprintf(port_buf[:], "%d", app.preferences.last_join_port)
     text_field_set(&app.port, port_text)
+
+    app.rendezvous_url = app.preferences.rendezvous_url
     reset_match(&app.game)
     app.render_game = app.game
     app.target_game = app.game
@@ -160,6 +171,7 @@ main :: proc() {
     save_config(app.preferences, app.last_game_rules)
     discovery_host_shutdown(&app.discovery_host)
     discovery_client_shutdown(&app.discovery_client)
+    internet_send_leave(&app.internet, &app.net)
     net_shutdown(&app.net)
     rl.UnloadRenderTexture(canvas)
 
@@ -233,6 +245,12 @@ update_app :: proc(app: ^App, dt: f32) {
 
     case .Join_Setup:
         update_join_setup(app)
+
+    case .Internet_Host:
+        update_internet_host(app)
+
+    case .Internet_Join:
+        update_internet_join(app)
 
     case .Lobby:
         update_lobby(app, dt)
@@ -366,6 +384,192 @@ update_join_setup :: proc(app: ^App) {
     }
 }
 
+persist_rendezvous_settings :: proc(app: ^App) {
+    app.preferences.rendezvous_url = app.rendezvous_url
+    save_config(app.preferences, app.last_game_rules)
+}
+
+start_internet_hosting :: proc(app: ^App) {
+    cancel_match_start_fade(app)
+
+    rendezvous_url := text_field_string(&app.rendezvous_url)
+    if !internet_valid_rendezvous_url(rendezvous_url) {
+        app.online_status = .Error
+        app.status_message = "Enter a rendezvous URL beginning with http:// or https://."
+        return
+    }
+
+    sanitize_player_name(&app.preferences.player_name)
+    app.network_rules = app.last_game_rules
+    reset_match(&app.game)
+    app.render_game = app.game
+    app.target_game = app.game
+    persist_rendezvous_settings(app)
+
+    if !internet_begin_host(
+        &app.internet,
+        &app.net,
+        rendezvous_url,
+        text_field_string(&app.preferences.player_name),
+    ) {
+        app.online_status = .Error
+        app.status_message = "Could not start Internet rendezvous."
+        return
+    }
+
+    app.online_status = .Hosting
+    app.connection_origin = .Internet_Host
+    app.status_message = ""
+}
+
+start_internet_joining :: proc(app: ^App) {
+    cancel_match_start_fade(app)
+
+    rendezvous_url := text_field_string(&app.rendezvous_url)
+    if !internet_valid_rendezvous_url(rendezvous_url) {
+        app.online_status = .Error
+        app.status_message = "Enter a rendezvous URL beginning with http:// or https://."
+        return
+    }
+
+    sanitize_player_name(&app.preferences.player_name)
+    reset_match(&app.target_game)
+    app.render_game = app.target_game
+    app.network_rules = default_game_rules()
+    persist_rendezvous_settings(app)
+
+    if !internet_begin_join(
+        &app.internet,
+        &app.net,
+        rendezvous_url,
+        text_field_string(&app.room_code),
+        text_field_string(&app.preferences.player_name),
+    ) {
+        app.online_status = .Error
+        app.status_message = "Could not start Internet rendezvous."
+        return
+    }
+
+    app.online_status = .Joining
+    app.connection_origin = .Internet_Join
+    app.status_message = ""
+}
+
+update_internet_host :: proc(app: ^App) {
+    active := app.online_status == .Hosting
+    if !active {
+        text_field_update(&app.rendezvous_url, allow_server_url_char)
+    }
+
+    if rl.IsKeyPressed(.ESCAPE) {
+        if active {
+            internet_cancel(&app.internet, &app.net)
+            app.online_status = .Idle
+            app.status_message = ""
+        } else {
+            if app.net.socket_open { internet_cancel(&app.internet, &app.net) }
+            app.screen = .Online
+        }
+        return
+    }
+
+    if !active { return }
+
+    if app.internet.phase != .Ready {
+        internet_update(&app.internet, &app.net)
+    }
+    if app.internet.phase == .Error {
+        app.online_status = .Error
+        return
+    }
+    if app.internet.phase != .Ready { return }
+
+    connected, _ := net_receive_host(&app.net, app.network_rules, &app.game)
+    if connected {
+        internet_send_leave(&app.internet, &app.net)
+        internet_detach(&app.internet)
+        app.render_game = app.game
+        app.target_game = app.game
+        app.screen = .Lobby
+        return
+    }
+
+    if rl.GetTime() - app.internet.phase_started_time > JOIN_TIMEOUT {
+        internet_fail(&app.internet, "Direct UDP path opened, but the Pong handshake timed out.")
+        app.online_status = .Error
+    }
+}
+
+update_internet_join :: proc(app: ^App) {
+    active := app.online_status == .Joining
+    if !active {
+        text_field_update(&app.rendezvous_url, allow_server_url_char)
+        text_field_update(&app.room_code, allow_room_code_char)
+        if app.room_code.length > 8 { app.room_code.length = 8 }
+    }
+
+    if rl.IsKeyPressed(.ESCAPE) {
+        if active {
+            internet_cancel(&app.internet, &app.net)
+            app.online_status = .Idle
+            app.status_message = ""
+        } else {
+            if app.net.socket_open { internet_cancel(&app.internet, &app.net) }
+            app.screen = .Online
+        }
+        return
+    }
+
+    if !active { return }
+
+    if app.internet.phase != .Ready {
+        internet_update(&app.internet, &app.net)
+    }
+    if app.internet.phase == .Error {
+        app.online_status = .Error
+        return
+    }
+    if app.internet.phase != .Ready { return }
+
+    client_send_handshake_if_due(&app.net)
+    _, got_lobby, got_state := net_receive_client(&app.net, &app.network_rules, &app.target_game)
+    if app.net.protocol_mismatch {
+        internet_fail(&app.internet, "Peer is running an incompatible gameplay protocol.")
+        app.online_status = .Error
+        return
+    }
+
+    if got_state || got_lobby {
+        internet_send_leave(&app.internet, &app.net)
+        internet_detach(&app.internet)
+        if got_state {
+            app.render_game = app.target_game
+            app.paused = false
+            app.pause_settings = false
+            app.countdown_sound_stage = 0
+            app.screen = .Game
+        } else {
+            app.screen = .Lobby
+        }
+        return
+    }
+
+    if join_timed_out(&app.net) {
+        internet_fail(&app.internet, "Direct UDP path opened, but the Pong handshake timed out.")
+        app.online_status = .Error
+    }
+}
+
+host_setup_return_screen :: proc(app: ^App) -> Screen {
+    if app.connection_origin == .Internet_Host { return .Internet_Host }
+    return .Host_Setup
+}
+
+join_setup_return_screen :: proc(app: ^App) -> Screen {
+    if app.connection_origin == .Internet_Join { return .Internet_Join }
+    return .Join_Setup
+}
+
 update_lobby :: proc(app: ^App, dt: f32) {
     if rl.IsKeyPressed(.ESCAPE) {
         cancel_match_start_fade(app)
@@ -384,7 +588,7 @@ update_lobby :: proc(app: ^App, dt: f32) {
             net_shutdown(&app.net, false)
             app.online_status = .Error
             app.status_message = "Player left the lobby."
-            app.screen = .Host_Setup
+            app.screen = host_setup_return_screen(app)
             return
         }
         if !app.net.connected || connection_timed_out(&app.net) {
@@ -392,7 +596,7 @@ update_lobby :: proc(app: ^App, dt: f32) {
             net_shutdown(&app.net, false)
             app.online_status = .Error
             app.status_message = "Player timed out in the lobby."
-            app.screen = .Host_Setup
+            app.screen = host_setup_return_screen(app)
             return
         }
 
@@ -441,7 +645,7 @@ update_lobby :: proc(app: ^App, dt: f32) {
             net_shutdown(&app.net, false)
             app.online_status = .Error
             app.status_message = "Host closed the lobby."
-            app.screen = .Join_Setup
+            app.screen = join_setup_return_screen(app)
             return
         }
         if !app.net.connected || connection_timed_out(&app.net) {
@@ -449,7 +653,7 @@ update_lobby :: proc(app: ^App, dt: f32) {
             net_shutdown(&app.net, false)
             app.online_status = .Error
             app.status_message = "Connection to host timed out in the lobby."
-            app.screen = .Join_Setup
+            app.screen = join_setup_return_screen(app)
             return
         }
 
@@ -491,7 +695,7 @@ update_game :: proc(app: ^App, dt: f32) {
             cancel_match_start_fade(app)
             app.paused = false
             app.pause_settings = false
-            app.screen = .Host_Setup
+            app.screen = host_setup_return_screen(app)
             return
         }
         if !app.net.connected || connection_timed_out(&app.net) {
@@ -501,7 +705,7 @@ update_game :: proc(app: ^App, dt: f32) {
             cancel_match_start_fade(app)
             app.paused = false
             app.pause_settings = false
-            app.screen = .Host_Setup
+            app.screen = host_setup_return_screen(app)
             return
         }
 
@@ -566,7 +770,7 @@ update_game :: proc(app: ^App, dt: f32) {
             cancel_match_start_fade(app)
             app.paused = false
             app.pause_settings = false
-            app.screen = .Join_Setup
+            app.screen = join_setup_return_screen(app)
             return
         }
         if !app.net.connected || connection_timed_out(&app.net) {
@@ -576,7 +780,7 @@ update_game :: proc(app: ^App, dt: f32) {
             cancel_match_start_fade(app)
             app.paused = false
             app.pause_settings = false
-            app.screen = .Join_Setup
+            app.screen = join_setup_return_screen(app)
             return
         }
 
@@ -616,6 +820,10 @@ draw_app :: proc(app: ^App) {
         draw_host_setup(app)
     case .Join_Setup:
         draw_join_setup(app)
+    case .Internet_Host:
+        draw_internet_host(app)
+    case .Internet_Join:
+        draw_internet_join(app)
     case .Lobby:
         draw_lobby(app)
     case .Settings:
@@ -645,21 +853,35 @@ draw_main_menu :: proc(app: ^App) {
 
     draw_text_centered("W/S or arrows to move during a match", 492, 17, MUTED)
     version_buf: [128]u8
-    version_text := fmt.bprintf(version_buf[:], "%s  |  protocol 4  |  discovery 1", APP_VERSION)
+    version_text := fmt.bprintf(version_buf[:], "%s  |  protocol 4  |  discovery 1  |  rendezvous 1", APP_VERSION)
     draw_text(version_text, 18, WINDOW_H - 24, 13, MUTED)
 }
 
 draw_online :: proc(app: ^App) {
-    draw_text_centered("PLAY ONLINE", 72, 50, FG)
-    draw_text_centered("Choose how you want to connect.", 138, 18, MUTED)
+    draw_text_centered("PLAY ONLINE", 42, 48, FG)
+    draw_text_centered("Use a short room code over the Internet, or connect directly on a LAN/IP.", 104, 16, MUTED)
 
-    if button("HOST GAME", rl.Rectangle{330, 215, 300, 62}) {
+    if button("HOST WITH CODE", rl.Rectangle{330, 156, 300, 56}) {
+        app.online_status = .Idle
+        app.status_message = ""
+        internet_reset(&app.internet)
+        app.screen = .Internet_Host
+        return
+    }
+    if button("JOIN WITH CODE", rl.Rectangle{330, 224, 300, 56}) {
+        app.online_status = .Idle
+        app.status_message = ""
+        internet_reset(&app.internet)
+        app.screen = .Internet_Join
+        return
+    }
+    if button("HOST LAN / DIRECT", rl.Rectangle{330, 312, 300, 52}) {
         app.online_status = .Idle
         app.status_message = ""
         app.screen = .Host_Setup
         return
     }
-    if button("JOIN GAME", rl.Rectangle{330, 297, 300, 62}) {
+    if button("JOIN LAN / DIRECT", rl.Rectangle{330, 376, 300, 52}) {
         app.online_status = .Idle
         app.status_message = ""
         discovery_client_shutdown(&app.discovery_client)
@@ -667,8 +889,117 @@ draw_online :: proc(app: ^App) {
         app.screen = .Join_Setup
         return
     }
-    if button("BACK", rl.Rectangle{330, 405, 300, 52}) {
+    if button("BACK", rl.Rectangle{360, 472, 240, 44}) {
         app.screen = .Main_Menu
+    }
+
+    draw_text_centered("Room-code play uses Cloudflare STUN + HTTP rendezvous + direct UDP hole punching.", 532, 13, MUTED)
+}
+
+draw_internet_host :: proc(app: ^App) {
+    active := app.online_status == .Hosting
+
+    draw_text_centered("HOST WITH CODE", 18, 40, FG)
+    draw_text_centered("Cloudflare discovers your UDP mapping; the rendezvous service only exchanges room data.", 62, 14, MUTED)
+
+    text_field("Rendezvous URL", &app.rendezvous_url, rl.Rectangle{190, 94, 610, 44}, !active)
+
+    _ = setting_row_int("Winning score", &app.last_game_rules.winning_score, 156, 1, 21, 1, !active)
+    _ = setting_row_f32("Ball speed", &app.last_game_rules.ball_speed, 208, 250, 900, 25, !active)
+    _ = setting_row_f32("Paddle speed", &app.last_game_rules.paddle_speed, 260, 250, 900, 25, !active)
+
+    if button("CREATE ROOM", rl.Rectangle{330, 320, 300, 48}, !active) {
+        start_internet_hosting(app)
+    }
+
+    code := internet_room_code(&app.internet)
+    if len(code) > 0 {
+        draw_text_centered("ROOM CODE", 382, 14, MUTED)
+        draw_text_centered(code, 402, 36, ACCENT)
+        if button("COPY CODE", rl.Rectangle{660, 397, 150, 38}) {
+            clipboard_set_text(code)
+            app.status_message = "Room code copied."
+        }
+    }
+
+    if app.internet.public_endpoint_valid {
+        endpoint_buf: [128]u8
+        endpoint := internet_public_endpoint_text(&app.internet, endpoint_buf[:])
+        public_buf: [192]u8
+        public_text := fmt.bprintf(public_buf[:], "STUN public endpoint: %s", endpoint)
+        draw_text_centered(public_text, 452, 13, MUTED)
+    }
+
+    if active || app.internet.phase == .Error {
+        status := internet_status(&app.internet)
+        colour := GOOD
+        if app.internet.phase == .Error { colour = DANGER }
+        draw_text_centered(status, 478, 14, colour)
+    } else if app.status_message != "" {
+        draw_text_centered(app.status_message, 478, 14, ACCENT)
+    } else {
+        draw_text_centered("Share the six-character code. No IP address needs to be exchanged manually.", 478, 14, MUTED)
+    }
+
+    back_label := "BACK"
+    if active { back_label = "CANCEL" }
+    if button(back_label, rl.Rectangle{30, 500, 180, 34}) {
+        if active {
+            internet_cancel(&app.internet, &app.net)
+            app.online_status = .Idle
+            app.status_message = ""
+        } else {
+            if app.net.socket_open { internet_cancel(&app.internet, &app.net) }
+            app.screen = .Online
+        }
+    }
+}
+
+draw_internet_join :: proc(app: ^App) {
+    active := app.online_status == .Joining
+
+    draw_text_centered("JOIN WITH CODE", 24, 40, FG)
+    draw_text_centered("Enter the same HTTP rendezvous URL and the code sent by the host.", 70, 14, MUTED)
+
+    text_field("Rendezvous URL", &app.rendezvous_url, rl.Rectangle{190, 112, 610, 46}, !active)
+    text_field("Room code", &app.room_code, rl.Rectangle{300, 206, 360, 54}, !active)
+
+    if button("JOIN ROOM", rl.Rectangle{330, 292, 300, 52}, !active) {
+        start_internet_joining(app)
+    }
+
+    if app.internet.public_endpoint_valid {
+        endpoint_buf: [128]u8
+        endpoint := internet_public_endpoint_text(&app.internet, endpoint_buf[:])
+        public_buf: [192]u8
+        public_text := fmt.bprintf(public_buf[:], "STUN public endpoint: %s", endpoint)
+        draw_text_centered(public_text, 376, 13, MUTED)
+    }
+
+    if active || app.internet.phase == .Error {
+        status := internet_status(&app.internet)
+        colour := GOOD
+        if app.internet.phase == .Error { colour = DANGER }
+        draw_text_centered(status, 420, 15, colour)
+    } else if app.status_message != "" {
+        draw_text_centered(app.status_message, 420, 15, DANGER)
+    } else {
+        draw_text_centered("Pong tries native IPv6, same-LAN IPv4, then the STUN-observed public IPv4 mapping.", 420, 13, MUTED)
+    }
+
+    draw_text_centered("If all direct candidates fail, this NAT likely needs relay/TURN support.", 456, 13, MUTED)
+
+    back_label := "BACK"
+    if active { back_label = "CANCEL" }
+    if button(back_label, rl.Rectangle{30, 500, 180, 34}) {
+        if active {
+            internet_cancel(&app.internet, &app.net)
+            app.online_status = .Idle
+            app.status_message = ""
+        } else {
+            if app.net.socket_open { internet_cancel(&app.internet, &app.net) }
+            app.screen = .Online
+        }
     }
 }
 
@@ -945,6 +1276,7 @@ start_joining_address :: proc(app: ^App, address_text: string, port: int, rememb
     app.render_game = app.target_game
     app.network_rules = default_game_rules()
     app.online_status = .Joining
+    app.connection_origin = .Join_Setup
     app.status_message = ""
     return true
 }
@@ -1120,6 +1452,7 @@ start_hosting :: proc(app: ^App) {
     reset_match(&app.game)
     _ = discovery_host_start(&app.discovery_host, port, text_field_string(&app.preferences.player_name), app.net.accepts_ipv6)
     app.online_status = .Hosting
+    app.connection_origin = .Host_Setup
     app.status_message = ""
 }
 

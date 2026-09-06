@@ -1,108 +1,140 @@
 # Releasing Pong
 
-This project uses semantic-style public release tags such as `v1.0.0`, `v1.1.0`, and `v1.1.1`. Internal development milestone numbers used before the first public release are not part of the public version history.
+Public releases use semantic versions such as `v1.0.0`, `v1.1.0`, and `v1.2.0`.
 
-## v1.1.0 release scope
+## v1.2.0 release scope
 
-Before tagging v1.1.0, verify the feature release actually includes:
+Before tagging, verify that v1.2.0 includes:
 
-- IPv4 gameplay;
-- dual-stack host gameplay where supported;
-- IPv6-preferred LAN joining;
-- automatic IPv4 LAN fallback;
-- IPv4-only LAN hosting/discovery;
-- direct IPv4 and IPv6 connect;
-- IPv6-preferred / IPv4-fallback COPY INVITE;
-- Windows firewall/path documentation;
-- no visible references to the old internal milestone numbering.
+- v1.1 IPv4/IPv6 dual-stack gameplay and LAN fallback;
+- six-character room-code hosting/joining;
+- Cloudflare STUN Binding from the exact gameplay UDP socket;
+- a separate HTTP/HTTPS rendezvous service;
+- Render deployment support (`render.yaml`, `0.0.0.0:$PORT`, `/healthz`);
+- rendezvous candidate exchange;
+- simultaneous UDP hole punching;
+- candidate preference of global IPv6, local IPv4, then STUN-observed public endpoint;
+- explicit failure when direct punching requires a future relay/TURN path;
+- bundled/tested Go HTTP rendezvous source;
+- Windows full-path firewall guidance;
+- no pre-public internal milestone labels in the UI or release metadata.
 
-Gameplay protocol remains **v4** and discovery protocol remains **v1** because the existing packet formats remain compatible.
+Protocol versions are **gameplay v4**, **discovery v1**, and **HTTP rendezvous v1**.
 
-## Toolchain
+## Infrastructure split
 
-The GitHub Actions workflow is pinned to Odin `dev-2026-07` through the `ODIN_VERSION` environment variable in `.github/workflows/release.yml`.
-
-Before changing the pinned Odin version, test networking and packaging locally on the affected platforms.
-
-## Build locally
-
-Development build:
-
-```bash
-odin build . -out:pong
+```text
+Cloudflare STUN        UDP 3478        public UDP mapping discovery
+Render rendezvous      HTTPS           room codes + candidate exchange
+Pong peers             UDP             hole punching + gameplay
 ```
 
-Optimized release archive on Linux/macOS:
+The Render service does not need public UDP. Do not deploy the old combined STUN/rendezvous design for v1.2.0.
 
-```bash
-./build-release.sh
-```
+## Toolchains
 
-Optimized Windows release archive:
+Client release CI is pinned to Odin `dev-2026-07`. The rendezvous server uses Go `1.23.x` in GitHub Actions.
+
+Linux client builds also require libcurl/mbedTLS development packages because the client uses Odin `vendor:curl` for HTTPS.
+
+## Local client builds
+
+Windows:
 
 ```powershell
+build.bat
 build-release.bat
 ```
 
-Archives are written to `dist/`.
+Windows v1.2 builds use `-define:RAYLIB_SHARED=true` because the bundled static raylib and `vendor:curl` libraries select conflicting CRTs when linked together. Both scripts locate the active Odin installation automatically. Development builds copy `raylib.dll` beside `pong.exe`, and release packaging includes the DLL in the Windows ZIP.
 
-## Required networking smoke tests
-
-Before publishing v1.1.0, test at least:
-
-1. IPv6-capable host + IPv6-capable client: LAN discovery joins over IPv6.
-2. IPv6-capable host + client without usable global IPv6: LAN discovery joins over IPv4.
-3. IPv6 first path deliberately unavailable: LAN join retries over IPv4.
-4. Host without usable global IPv6: it still advertises on LAN and accepts IPv4 gameplay.
-5. Direct IPv4 literal connect.
-6. Direct IPv6 literal connect.
-7. Full lobby, countdown, match and rematch over both transports where possible.
-
-The lobby/network stats display the selected gameplay transport and are useful for confirming whether IPv4 or IPv6 was chosen.
-
-## Windows release check
-
-Windows Firewall application rules are path-specific. A `pong.exe` that was allowed in one directory may not have the same permission after it is moved or extracted elsewhere.
-
-For a realistic release test:
-
-1. build/package the Windows archive;
-2. extract it into a fresh, permanent directory;
-3. run that extracted `pong.exe`;
-4. grant the Windows firewall prompt for the intended network profile if shown;
-5. verify both joining and hosting from that extracted location;
-6. verify UDP `37776` discovery and the selected gameplay UDP port.
-
-Do not diagnose a release binary solely by comparing it with a source-tree `pong.exe` that already has an existing firewall rule.
-
-## GitHub Actions
-
-The workflow can be launched manually from the Actions tab. A manual run builds and uploads CI artifacts but does not create a GitHub Release.
-
-To publish `v1.1.0`, ensure `VERSION` and `APP_VERSION` both identify `1.1.0`, commit the changes, then create and push the tag:
+Linux/macOS:
 
 ```bash
-git tag -a v1.1.0 -m "Pong v1.1.0"
-git push origin v1.1.0
+odin build . -out:pong
+./build-release.sh
 ```
 
-The tag run builds:
+## Local rendezvous-server build
 
-- `pong-v1.1.0-windows-x64.zip`
-- `pong-v1.1.0-linux-x64.tar.gz`
-- `pong-v1.1.0-macos-arm64.zip`
+```bash
+cd server
+go test ./...
+go build -o pong-rendezvous .
+./pong-rendezvous -listen 0.0.0.0:10000
+```
 
-and creates a GitHub Release containing those archives.
+Use `http://127.0.0.1:10000` when the client and service are on the same machine.
 
-## Audio assets
+## Render smoke test
 
-Release archives include both music loops under `assets/`:
+Deploy from the root `render.yaml` or manually configure:
 
-- `pong_menu_loop.wav`
-- `pong_gameplay_loop.wav`
+```text
+Root directory: server
+Build:          go build -trimpath -ldflags="-s -w" -o pong-rendezvous .
+Start:          ./pong-rendezvous
+Health check:   /healthz
+```
 
-The packager copies them unchanged on all platforms.
+Confirm:
+
+```bash
+curl https://YOUR-SERVICE.onrender.com/healthz
+```
+
+returns:
+
+```text
+ok
+```
+
+Then put the same `https://YOUR-SERVICE.onrender.com` URL into both Pong clients.
+
+## Required v1.2 smoke tests
+
+Test at least:
+
+1. existing LAN IPv6-preferred join;
+2. existing LAN IPv4 fallback;
+3. direct IPv4 join;
+4. direct IPv6 join where available;
+5. Cloudflare STUN public endpoint appears on both clients;
+6. room creation over HTTPS returns a six-character code;
+7. room join over the same Render URL succeeds;
+8. both peers receive candidate data and the same punch nonce;
+9. peers establish a direct candidate and reach the normal lobby;
+10. full match + synchronized countdown + rematch over the punched path;
+11. punching timeout presents the relay/TURN limitation cleanly;
+12. Render `/healthz` succeeds and no public UDP port is configured for the rendezvous service;
+13. Windows release ZIP is extracted to its final path and firewall permission is granted for that path.
+
+For NAT traversal, test on genuinely different access networks when possible. Two peers on one LAN are not sufficient to validate Internet hole punching.
+
+## Expected release artifacts
+
+```text
+pong-v1.2.0-windows-x64.zip
+pong-v1.2.0-linux-x64.tar.gz
+pong-v1.2.0-macos-arm64.zip
+pong-rendezvous-v1.2.0-linux-x64.tar.gz
+```
+
+## Tag release
+
+After the tested commit is pushed:
+
+```bash
+git tag -a v1.2.0 -m "Pong v1.2.0"
+git push origin v1.2.0
+```
+
+The GitHub Actions workflow builds all client archives plus the Linux x64 HTTP rendezvous binary and attaches them to the GitHub Release.
+
+## Windows release note
+
+Windows Firewall rules are path-specific. Test the downloaded/extracted release from the actual folder users will run it from. A `pong.exe` that is allowed in a development directory does not prove a copy under Downloads or another folder has permission.
 
 ## macOS
 
-The macOS archive contains `Pong.app`. It is not code-signed or notarized yet, so Gatekeeper may warn when it is downloaded from the Internet. Signing/notarization requires Apple developer credentials and is deliberately not part of the public CI workflow yet.
+`Pong.app` is currently unsigned and unnotarized, so Gatekeeper may warn after Internet download.

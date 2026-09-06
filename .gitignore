@@ -5,3 +5,4 @@ pong.exe
 *.pdb
 *.dSYM/
 .DS_Store
+server/pong-rendezvous

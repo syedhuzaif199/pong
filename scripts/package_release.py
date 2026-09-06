@@ -41,12 +41,13 @@ def zip_tree(source: Path, archive: Path, root_name: str | None = None) -> None:
             zf.write(item, arcname.as_posix())
 
 
-def package_windows(binary: Path, arch: str) -> Path:
+def package_windows(binary: Path, arch: str, raylib_dll: Path) -> Path:
     name = f"pong-{DISPLAY_VERSION}-windows-{arch}"
     stage = DIST / name
     shutil.rmtree(stage, ignore_errors=True)
     stage.mkdir(parents=True)
     shutil.copy2(binary, stage / "pong.exe")
+    shutil.copy2(raylib_dll, stage / "raylib.dll")
     copy_common(stage)
     archive = DIST / f"{name}.zip"
     archive.unlink(missing_ok=True)
@@ -115,6 +116,7 @@ def main() -> None:
     ap.add_argument("--platform", choices=("windows", "linux", "macos"), required=True)
     ap.add_argument("--arch", choices=("x64", "arm64"), required=True)
     ap.add_argument("--binary", type=Path, required=True)
+    ap.add_argument("--raylib-dll", type=Path)
     args = ap.parse_args()
 
     binary = args.binary.resolve()
@@ -125,7 +127,12 @@ def main() -> None:
 
     DIST.mkdir(exist_ok=True)
     if args.platform == "windows":
-        archive = package_windows(binary, args.arch)
+        if args.raylib_dll is None:
+            raise SystemExit("--raylib-dll is required for Windows packages")
+        raylib_dll = args.raylib_dll.resolve()
+        if not raylib_dll.is_file():
+            raise SystemExit(f"raylib DLL does not exist: {raylib_dll}")
+        archive = package_windows(binary, args.arch, raylib_dll)
     elif args.platform == "linux":
         archive = package_linux(binary, args.arch)
     else:

@@ -56,6 +56,7 @@ App_Settings :: struct {
     show_net_stats:  bool,
     last_join_address: Text_Field,
     last_join_port:  int,
+    rendezvous_url: Text_Field,
 }
 
 default_app_settings :: proc() -> App_Settings {
@@ -70,6 +71,7 @@ default_app_settings :: proc() -> App_Settings {
     }
     text_field_set(&settings.player_name, "Player")
     text_field_set(&settings.last_join_address, "::1")
+    text_field_set(&settings.rendezvous_url, RENDEZVOUS_DEFAULT_URL)
     return settings
 }
 
@@ -152,6 +154,13 @@ load_config :: proc(settings: ^App_Settings, last_rules: ^Game_Rules) {
             if parse_ok && parsed >= 1 && parsed <= 65535 {
                 settings.last_join_port = parsed
             }
+        case "rendezvous_url":
+            if internet_valid_rendezvous_url(value) {
+                text_field_set(&settings.rendezvous_url, value)
+            }
+        case "rendezvous_host", "rendezvous_port":
+            // v1.2 changed rendezvous from a custom UDP endpoint to an HTTP(S)
+            // service URL. Old host/port values cannot be migrated reliably.
         case "last_winning_score":
             parsed, parse_ok := strconv.parse_int(value)
             if parse_ok && parsed >= 1 && parsed <= 21 {
@@ -189,10 +198,14 @@ save_config :: proc(settings: App_Settings, last_rules: Game_Rules) {
     last_join_address := text_field_string(&last_join_address_field)
     if len(last_join_address) == 0 { last_join_address = "::1" }
 
-    buf: [1024]u8
+    rendezvous_url_field := settings.rendezvous_url
+    rendezvous_url := text_field_string(&rendezvous_url_field)
+    if !internet_valid_rendezvous_url(rendezvous_url) { rendezvous_url = RENDEZVOUS_DEFAULT_URL }
+
+    buf: [1440]u8
     text := fmt.bprintf(
         buf[:],
-        "player_name=%s\nmusic_volume=%d\nmusic_muted=%d\nsfx_volume=%d\nsfx_muted=%d\nfullscreen=%d\nshow_net_stats=%d\nlast_join_address=%s\nlast_join_port=%d\nlast_winning_score=%d\nlast_ball_speed=%.0f\nlast_paddle_speed=%.0f\n",
+        "player_name=%s\nmusic_volume=%d\nmusic_muted=%d\nsfx_volume=%d\nsfx_muted=%d\nfullscreen=%d\nshow_net_stats=%d\nlast_join_address=%s\nlast_join_port=%d\nrendezvous_url=%s\nlast_winning_score=%d\nlast_ball_speed=%.0f\nlast_paddle_speed=%.0f\n",
         name,
         settings.music_volume,
         muted,
@@ -202,6 +215,7 @@ save_config :: proc(settings: App_Settings, last_rules: Game_Rules) {
         stats,
         last_join_address,
         settings.last_join_port,
+        rendezvous_url,
         last_rules.winning_score,
         last_rules.ball_speed,
         last_rules.paddle_speed,

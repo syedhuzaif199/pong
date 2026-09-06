@@ -109,6 +109,22 @@ allow_player_name_char :: proc(ch: rune) -> bool {
            ch == ' ' || ch == '_' || ch == '-'
 }
 
+allow_server_url_char :: proc(ch: rune) -> bool {
+    return (ch >= 'a' && ch <= 'z') ||
+           (ch >= 'A' && ch <= 'Z') ||
+           (ch >= '0' && ch <= '9') ||
+           ch == '.' || ch == '-' || ch == '_' ||
+           ch == ':' || ch == '/' || ch == '?' ||
+           ch == '=' || ch == '&' || ch == '%' || ch == '~'
+}
+
+allow_room_code_char :: proc(ch: rune) -> bool {
+    return (ch >= 'a' && ch <= 'z') ||
+           (ch >= 'A' && ch <= 'Z') ||
+           (ch >= '0' && ch <= '9') ||
+           ch == '-' || ch == ' '
+}
+
 // Convert physical-window mouse coordinates back into our fixed 960x540
 // logical canvas. This lets the same UI work in a resized or fullscreen window.
 logical_mouse_position :: proc() -> [2]f32 {

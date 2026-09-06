@@ -1,85 +1,235 @@
-# UDP Pong — Odin + raylib (v1.1.0)
+# UDP Pong — Odin + raylib (v1.2.0)
 
-A small two-player Pong game written in Odin with raylib. Gameplay is host-authoritative UDP with dual-stack IPv4/IPv6 support. LAN discovery uses IPv4 broadcast, prefers direct IPv6 gameplay when both peers have it, and automatically falls back to IPv4 when needed.
+A small two-player Pong game written in Odin with raylib. Gameplay is host-authoritative UDP. Pong supports IPv4 and IPv6, LAN discovery, direct IP play, and short-code Internet play.
 
-> **App version v1.1.0 · gameplay protocol v4 · discovery protocol v1**
+> **App v1.2.0 · gameplay protocol v4 · discovery protocol v1 · HTTP rendezvous protocol v1**
 >
-> Application versions and network protocol versions are independent. The protocol numbers only change when packet compatibility changes.
+> Application versions and wire-protocol versions are independent. The gameplay/discovery protocols remain compatible with v1.1.0.
 
-## What's new in v1.1.0
+## What's new in v1.2.0
 
-- IPv4 gameplay support
-- dual-stack hosting on one gameplay port where the platform supports it
-- IPv6-preferred LAN joins with automatic IPv4 fallback
-- IPv4-only LAN hosts can now be discovered and joined
-- direct connect accepts either IPv4 or IPv6 literals
-- COPY INVITE prefers IPv6 and uses IPv4 when no advertisable IPv6 address exists
-- lobby and network diagnostics show the transport actually in use
-- public versioning cleaned up to remove the old pre-release/internal milestone labels
-- release CI pinned to the tested Odin `dev-2026-07` toolchain
-- expanded Windows portable-ZIP/firewall guidance
+- six-character Internet room codes
+- **Cloudflare public STUN** (`stun.cloudflare.com:3478/udp`) to discover the public UDP mapping of the exact Pong gameplay socket
+- a separate **HTTP/HTTPS rendezvous service** for room creation and candidate exchange
+- Render-ready Go rendezvous server and root `render.yaml`
+- candidate exchange for global IPv6, same-LAN IPv4, and STUN-observed public IP/port
+- simultaneous UDP hole punching
+- direct IPv6 remains the preferred candidate when available
+- existing LAN discovery and direct IP joining remain available
+- rendezvous URL is remembered locally
+- HTTPS client support through Odin's `vendor:curl`
 
-## Features
+v1.2.0 does **not** include TURN/relay gameplay. Symmetric NAT, restrictive CGNAT, enterprise firewalls, or networks that block peer-to-peer UDP can still prevent a direct connection.
 
-- host-authoritative UDP Pong over IPv4 or IPv6
-- IPv6 preferred when it is usable, with IPv4 fallback for LAN play
-- per-session IDs and handshake nonces
-- player names
-- pre-game lobby and ready states
-- synchronized authoritative 3-2-1-GO countdown
-- mutual rematch negotiation
-- RTT/ping, inferred gameplay packet loss, UDP counters and timeout diagnostics
-- local pause/settings overlay that does not pause the remote match
-- separate looping menu and gameplay music
-- menu music quickly fades before the synchronized countdown
-- gameplay music starts from the beginning on `GO!`
-- persistent music/SFX volume and mute settings
-- fullscreen/windowed mode and Alt+Enter
-- fixed 960x540 logical canvas with scaling/letterboxing
-- ball trail, impact particles, paddle flash and score feedback
-- persistent per-game host rule defaults
+## Connection modes
+
+From **PLAY ONLINE** there are four paths:
+
+- **HOST WITH CODE** — discover the host's public UDP mapping with Cloudflare STUN, then create a room through the configured HTTP rendezvous URL.
+- **JOIN WITH CODE** — discover the joiner's public mapping, join the same room over HTTP, then punch the exchanged UDP candidates.
+- **HOST LAN / DIRECT** — host the existing dual-stack UDP game directly.
+- **JOIN LAN / DIRECT** — use LAN discovery or enter an IPv4/IPv6 address manually.
+
+The rendezvous service introduces peers but does not carry gameplay traffic after a direct path is established.
+
+## Room-code Internet flow
+
+The two infrastructure roles are intentionally separate:
+
+```text
+                     Cloudflare STUN
+                 stun.cloudflare.com:3478/udp
+                       ^           ^
+                       |           |
+             same Pong UDP     same Pong UDP
+                  socket           socket
+                       |           |
+                     HOST        JOINER
+                       |           |
+                       | HTTPS     | HTTPS
+                       v           v
+                  HTTP rendezvous service
+                    e.g. Render Web Service
+                       |           |
+                       +-- candidates --+
+
+                     HOST <=======> JOINER
+                         direct UDP
+                    PUNCH / PUNCH_ACK
+                           then
+               HELLO / WELCOME / STATE / INPUT
+```
+
+The steps are:
+
+1. Each client opens its Pong gameplay UDP socket.
+2. That same socket sends a STUN Binding request to Cloudflare.
+3. Cloudflare returns the public IP/port mapping seen for that socket.
+4. The host sends its candidates to the HTTP rendezvous service and receives a six-character room code.
+5. The joiner sends the room code plus its candidates to the same HTTP service.
+6. Both clients poll the short-lived room until the service returns the peer candidates and shared punch nonce.
+7. Both clients send UDP `PUNCH` packets toward the candidates simultaneously.
+8. The first working direct path is adopted, then the normal Pong protocol takes over.
+
+Candidate preference is:
+
+1. usable global IPv6;
+2. local IPv4;
+3. STUN-observed public endpoint.
+
+The HTTP service never needs a public UDP port and never sees gameplay packets.
+
+## Cloudflare STUN
+
+Pong uses:
+
+```text
+stun.cloudflare.com:3478/udp
+```
+
+Cloudflare documents this as its public STUN endpoint. Pong sends STUN from the **same UDP socket used for gameplay**, because a NAT can assign different public ports to different local sockets.
+
+Cloudflare STUN and the Pong rendezvous service are independent. If STUN times out, Pong can still exchange global IPv6/local candidates, but Internet IPv4 hole punching will usually be unavailable.
+
+Official Cloudflare reference:
+
+- https://developers.cloudflare.com/realtime/turn/
+
+## HTTP rendezvous service
+
+Server source is in `server/`. It is a normal Go HTTP service with no database and no UDP listener.
+
+Endpoints:
+
+```text
+GET  /healthz
+POST /v1/create
+POST /v1/join
+POST /v1/wait
+POST /v1/leave
+```
+
+Rooms are short-lived and stored in memory. A server restart invalidates outstanding room codes, which is acceptable for this matchmaking use case.
+
+Run locally:
+
+```bash
+cd server
+go test ./...
+go build -o pong-rendezvous .
+./pong-rendezvous -listen 0.0.0.0:10000
+```
+
+Then configure Pong with:
+
+```text
+http://127.0.0.1:10000
+```
+
+### Deploy on Render
+
+The repository root includes `render.yaml`. The Go service reads Render's `PORT` environment variable and binds `0.0.0.0:$PORT`.
+
+You can deploy the repository as a Render Blueprint, or create a Web Service manually with:
+
+```text
+Root directory:   server
+Build command:    go build -trimpath -ldflags="-s -w" -o pong-rendezvous .
+Start command:    ./pong-rendezvous
+Health check:     /healthz
+```
+
+After deployment, enter the Render HTTPS URL in both clients, for example:
+
+```text
+https://pong-rendezvous-example.onrender.com
+```
+
+No Render UDP port or firewall rule is required for rendezvous. Render only carries HTTPS control requests.
+
+Official Render reference:
+
+- https://render.com/docs/web-services
+
+## Hole-punching limitation
+
+STUN + rendezvous is enough for many home NATs, but not every NAT permits direct peer-to-peer UDP.
+
+If Pong reports:
+
+```text
+UDP hole punching failed. This NAT may require a relay/TURN path.
+```
+
+then none of the exchanged direct candidates worked within the punching window. A future release can add TURN/relay fallback.
+
+## Existing gameplay features
+
+- host-authoritative gameplay simulation
+- IPv4 + IPv6 UDP gameplay
+- dual-stack host socket where supported, with IPv4-only fallback
 - IPv4-broadcast LAN discovery
-- copy/paste IPv4 or IPv6 direct invites
-- remembered direct-connect endpoint
-
-## Music behavior
-
-Pong bundles two independent loops:
-
-- `assets/pong_menu_loop.wav` — main menu, setup screens, lobby, and game-over/rematch waiting
-- `assets/pong_gameplay_loop.wav` — active gameplay only
-
-When both players are ready, menu music quickly fades to silence. The authoritative synchronized countdown then runs, and gameplay music starts from its beginning on `GO!`. The same transition is used for mutually accepted rematches.
+- IPv6-preferred LAN joins with automatic IPv4 fallback
+- direct IPv4/IPv6 invites
+- player names, lobby, ready state, and synchronized 3-2-1-GO countdown
+- mutual rematches
+- RTT/ping, inferred packet-loss counters, and transport diagnostics
+- local pause/settings overlay without pausing the remote match
+- separate looping menu/gameplay music
+- persistent local settings
+- fixed 960x540 logical canvas with letterboxing
+- visual trail/impact/score effects
 
 ## Development build
 
-From the project directory:
+Release CI is pinned to Odin `dev-2026-07`.
+
+Windows:
+
+```powershell
+build.bat
+```
+
+`v1.2` uses Odin `vendor:curl` for HTTPS. Odin's bundled static Windows raylib and static libcurl use incompatible CRT-selection linker flags when linked into the same executable, so Windows builds use raylib as a DLL. `build.bat` automatically builds with `-define:RAYLIB_SHARED=true` and copies the matching `raylib.dll` from the active Odin installation beside `pong.exe`.
+
+The equivalent manual commands are:
+
+```powershell
+odin build . -out:pong.exe -define:RAYLIB_SHARED=true
+copy <ODIN_ROOT>\vendor\raylib\windows\raylib.dll .\raylib.dll
+```
+
+Linux needs the usual raylib dependencies plus libcurl/mbedTLS development libraries because v1.2 uses `vendor:curl` for HTTPS rendezvous:
+
+```bash
+sudo apt-get install \
+  libasound2-dev libgl1-mesa-dev libx11-dev libxcursor-dev libxi-dev \
+  libxinerama-dev libxrandr-dev libcurl4-openssl-dev libmbedtls-dev zlib1g-dev
+
+odin build . -out:pong
+```
+
+macOS:
 
 ```bash
 odin build . -out:pong
 ```
 
+Or during development:
+
 Windows:
 
 ```powershell
-odin build . -out:pong.exe
+odin run . -define:RAYLIB_SHARED=true
 ```
 
-Or run directly during development:
+Linux/macOS:
 
 ```bash
 odin run .
 ```
 
-The release workflow is pinned to Odin `dev-2026-07`, matching the locally validated toolchain family.
-
-## Release builds
-
-Linux/macOS:
-
-```bash
-./build-release.sh
-```
+## Client release builds
 
 Windows:
 
@@ -87,84 +237,47 @@ Windows:
 build-release.bat
 ```
 
-The packager writes archives to `dist/`:
+Linux/macOS:
 
-```text
-pong-v1.1.0-windows-x64.zip
-pong-v1.1.0-linux-x64.tar.gz
-pong-v1.1.0-macos-arm64.zip
+```bash
+./build-release.sh
 ```
 
-The GitHub Actions release workflow is pinned to Odin `dev-2026-07`.
+The Windows ZIP contains both `pong.exe` and `raylib.dll`; keep them together.
 
-## Quick local test
-
-Start two copies. Host on the first:
+Expected client archives:
 
 ```text
-PLAY ONLINE -> HOST GAME
-Port: 7777
-START HOSTING
+pong-v1.2.0-windows-x64.zip
+pong-v1.2.0-linux-x64.tar.gz
+pong-v1.2.0-macos-arm64.zip
 ```
 
-Join on the second with either loopback family:
+GitHub Actions also builds the standalone HTTP rendezvous binary archive:
 
 ```text
-PLAY ONLINE -> JOIN GAME
-IP address: ::1
-Port: 7777
-CONNECT
+pong-rendezvous-v1.2.0-linux-x64.tar.gz
 ```
 
-or:
+The standalone binary and the `server/` source are the same service. The binary is useful if you want to run the rendezvous API somewhere other than Render.
 
-```text
-IP address: 127.0.0.1
-Port: 7777
-CONNECT
-```
+## Direct/LAN networking
 
-## Dual-stack gameplay
+LAN discovery listens on UDP `37776`. Gameplay defaults to UDP `7777`, although the host can choose another port.
 
-The host first tries to create one IPv6 UDP socket with `IPV6_V6ONLY` disabled, then binds it to the chosen gameplay port. That socket accepts native IPv6 clients and IPv4 clients on the same port. If the platform cannot create that dual-stack socket, Pong falls back to an IPv4 gameplay socket instead of refusing to host.
+For a discovered LAN game, Pong prefers a usable advertised IPv6 address and retries the discovered IPv4 address if the IPv6 handshake does not answer quickly. If global IPv6 is unavailable, IPv4 is used immediately.
 
-A direct-connect client creates a socket matching the literal address entered by the player:
+On Windows, LAN discovery binds its broadcast socket to an active non-tunnel IPv4 interface with a gateway to avoid accidentally sending through WSL, Hyper-V, VPN, or other virtual interfaces.
 
-- IPv6 literal → IPv6 UDP client
-- IPv4 literal → IPv4 UDP client
+### Linux interface discovery
 
-No DNS/hostname resolution is currently exposed by the UI.
-
-## LAN discovery and automatic fallback
-
-LAN discovery uses UDP port **37776** over IPv4 broadcast. The discovery reply identifies the gameplay port and, when available, the host's preferred global IPv6 address. The client also learns the host's IPv4 address directly from the source address of that discovery reply.
-
-For a discovered LAN game, Pong chooses the gameplay route as follows:
-
-1. if the host advertises usable IPv6 and the client has usable global IPv6, try IPv6 first;
-2. if that IPv6 handshake does not answer quickly, retry the same host over the discovered IPv4 address;
-3. if the client has no usable global IPv6, use IPv4 immediately.
-
-This means a LAN no longer needs global IPv6 just to play Pong.
-
-Discovery itself is best-effort. Guest Wi-Fi/client isolation and firewall rules can prevent broadcast discovery even when direct IP gameplay works.
-
-On Windows, Pong binds the discovery client to an active non-tunnel IPv4 interface with a gateway before sending the broadcast. This avoids the common case where `255.255.255.255` is routed through WSL, Hyper-V, a VPN, or another virtual adapter. The Join screen shows the chosen interface address as `LAN search via ...`.
-
-## COPY INVITE
-
-When hosting, COPY INVITE chooses:
-
-1. a usable global IPv6 address, formatted as `[IPv6]:port`, when available;
-2. otherwise the selected local IPv4 address, formatted as `IPv4:port`.
-
-For Internet play, an IPv4 invite is only reachable when the host's NAT/router/firewall configuration permits inbound UDP to that machine. Pong does not yet perform NAT traversal automatically.
+The pinned Odin toolchain has a Linux `core:net.enumerate_interfaces()` regression. Pong therefore uses small Linux-specific fallbacks to find an advertisable global IPv6 address and a usable local IPv4 address. Gameplay itself still uses `core:net` UDP sockets.
 
 ## Windows firewall and portable ZIP
 
-**Extract the ZIP to a normal, permanent folder before running `pong.exe`.** Do not run the game directly from inside the ZIP archive.
+**Extract the ZIP to a normal, permanent folder before running `pong.exe`.** Do not run it from inside the ZIP archive.
 
-Windows Firewall application permissions are associated with the executable's **full path**. Allowing one copy of Pong does not necessarily allow another copy stored somewhere else. For example, permission for:
+Windows Firewall application permissions are associated with an executable's **full path**. Permission for:
 
 ```text
 C:\Games\Pong\pong.exe
@@ -173,56 +286,31 @@ C:\Games\Pong\pong.exe
 does not automatically apply to:
 
 ```text
-C:\Users\you\Downloads\pong-v1.1.0-windows-x64\pong.exe
+C:\Users\you\Downloads\pong-v1.2.0-windows-x64\pong.exe
 ```
 
-If Windows asks whether Pong may communicate through the firewall, allow it on the networks on which you intend to play (normally **Private networks** for LAN play). If you later move `pong.exe`, Windows may require permission again for the new path.
+If Windows prompts for network access, allow Pong on the networks where you intend to play. Moving `pong.exe` later can cause Windows to require permission again for the new path.
 
-If networking works from one Pong folder but not another, check Windows Defender Firewall's allowed-app/rule list for stale Pong paths rather than disabling the firewall globally.
-
-For LAN play, both gameplay UDP (default `7777`, or your chosen port) and discovery UDP (`37776`) may need to be permitted.
+For direct/LAN hosting, the selected gameplay UDP port and discovery UDP `37776` may need inbound permission. For room-code play, Pong also needs outbound UDP to Cloudflare STUN and direct inbound/outbound UDP for the peer-to-peer path. The Render rendezvous service itself is ordinary HTTPS and does not require a UDP firewall exception.
 
 ## Linux / UFW
 
-If UFW is enabled and blocks the game, these gameplay rules may be required for the default port:
+If UFW is enabled on a game host and blocks direct/LAN play, the default gameplay/discovery ports can be allowed with:
 
 ```bash
 sudo ufw allow 7777/udp
-sudo ufw allow in proto udp from any port 7777
-```
-
-For LAN discovery, if required:
-
-```bash
 sudo ufw allow 37776/udp
-sudo ufw allow in proto udp from any port 37776
 ```
 
-A normal stateful firewall may not require all source-port rules.
-
-### Linux interface discovery
-
-The Odin toolchain pinned by this project currently has a Linux `core:net.enumerate_interfaces()` regression. Pong therefore uses small Linux-specific fallbacks:
-
-- `/proc/net/if_inet6` to choose an advertisable global IPv6 address, preferring a non-temporary address;
-- libc `getifaddrs()` to identify a usable local IPv4 address for invite/display purposes.
-
-Actual gameplay still uses `core:net` UDP sockets.
-
-## Internet play
-
-Direct Internet play supports both address families, but their practical reachability differs:
-
-- **IPv6:** usually the preferred direct path when both peers have usable global IPv6; host firewall rules still matter.
-- **IPv4:** works directly only when the host is publicly reachable or the router/NAT forwards the gameplay UDP port to the host.
-
-Pong does **not** yet implement STUN, ICE, UDP hole punching, TURN/relay fallback, or invite-code rendezvous. Those remain future work for making Internet play work automatically behind typical NATs.
+There is no `3478/udp` rule to open on the HTTP rendezvous server. Cloudflare owns the STUN endpoint.
 
 ## Release caveats
 
-- The macOS `.app` is currently unsigned and unnotarized.
-- There is not yet a custom platform executable/app icon.
-- Windows and Linux archives are portable folders rather than installers/packages.
-- Windows users may need to grant firewall permission for the folder from which `pong.exe` is actually run; see **Windows firewall and portable ZIP** above.
+- room-code connectivity is direct-only in v1.2.0; there is no TURN/relay fallback yet
+- rendezvous traffic is protected by HTTPS when you configure an `https://` URL; local `http://` is supported for development
+- room codes and peer tokens are short-lived and stored only in memory
+- the macOS `.app` is unsigned and unnotarized
+- there is no custom platform icon yet
+- Windows and Linux distributions are portable archives rather than installers
 
 See `THIRD_PARTY_NOTICES.md` for dependency notices.

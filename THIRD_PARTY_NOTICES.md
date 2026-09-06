@@ -16,4 +16,18 @@ The Odin compiler and standard/vendor packages are developed by the Odin project
 Project: https://odin-lang.org/
 Source: https://github.com/odin-lang/Odin
 
+## libcurl
+
+v1.2.0 uses the libcurl bindings distributed with Odin for HTTP/HTTPS rendezvous requests. libcurl is Copyright (c) Daniel Stenberg and contributors and is distributed under the curl license.
+
+Project: https://curl.se/
+Source: https://github.com/curl/curl
+
+## mbed TLS / zlib
+
+On Linux, Odin's `vendor:curl` package links the platform curl/mbed TLS/zlib libraries. mbed TLS is distributed under Apache-2.0 and zlib under the zlib license.
+
+mbed TLS: https://github.com/Mbed-TLS/mbedtls
+zlib: https://zlib.net/
+
 The audio files in `assets/` were created specifically for this Pong project and are not third-party music or sound assets.

@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: pong-rendezvous
+    runtime: go
+    plan: free
+    rootDir: server
+    buildCommand: go build -trimpath -ldflags="-s -w" -o pong-rendezvous .
+    startCommand: ./pong-rendezvous
+    healthCheckPath: /healthz
+    autoDeploy: true

@@ -50,6 +50,7 @@ jobs:
           $odin = Get-ChildItem -Path $dest -Filter odin.exe -Recurse | Select-Object -First 1
           if (-not $odin) { throw "odin.exe was not found after extraction" }
           Add-Content -Path $env:GITHUB_PATH -Value $odin.Directory.FullName
+          Add-Content -Path $env:GITHUB_ENV -Value "ODIN_ROOT=$($odin.Directory.FullName)"
 
       - name: Install Odin (Linux/macOS)
         if: runner.os != 'Windows'
@@ -85,7 +86,10 @@ jobs:
             libxcursor-dev \
             libxi-dev \
             libxinerama-dev \
-            libxrandr-dev
+            libxrandr-dev \
+            libcurl4-openssl-dev \
+            libmbedtls-dev \
+            zlib1g-dev
 
       - name: Show Odin version
         run: odin version
@@ -95,8 +99,8 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force build | Out-Null
-          odin build . -out:build/pong.exe -o:speed -subsystem:windows
-          python scripts/package_release.py --platform windows --arch x64 --binary build/pong.exe
+          odin build . -out:build/pong.exe -o:speed -subsystem:windows -define:RAYLIB_SHARED=true
+          python scripts/package_release.py --platform windows --arch x64 --binary build/pong.exe --raylib-dll "$env:ODIN_ROOT/vendor/raylib/windows/raylib.dll"
 
       - name: Build and package Linux
         if: matrix.platform == 'linux'
@@ -128,10 +132,47 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  rendezvous-server:
+    name: HTTP rendezvous server Linux x64
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.23.x'
+          cache: false
+
+      - name: Test HTTP rendezvous server
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd server
+          go test ./...
+
+      - name: Build and package HTTP rendezvous server
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          cd server
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="-s -w" -o ../build/pong-rendezvous .
+          cd ..
+          python3 scripts/package_server.py --binary build/pong-rendezvous --arch x64
+
+      - name: Upload rendezvous archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: pong-rendezvous-linux-x64
+          path: dist/pong-rendezvous-*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
   github-release:
     name: Publish GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, rendezvous-server]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4
