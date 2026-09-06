@@ -132,6 +132,73 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
+  android-client:
+    name: Android ARM64 APK
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Gradle 9.6
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '9.6.0'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK/NDK packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null || true
+          sdkmanager \
+            "platforms;android-36" \
+            "build-tools;36.0.0" \
+            "ndk;29.0.14206865" \
+            "cmake;3.22.1"
+          echo "ANDROID_NDK_HOME=${ANDROID_SDK_ROOT}/ndk/29.0.14206865" >> "$GITHUB_ENV"
+          echo "ANDROID_HOME=${ANDROID_SDK_ROOT}" >> "$GITHUB_ENV"
+
+      - name: Install Odin
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset="odin-linux-amd64-${ODIN_VERSION}.tar.gz"
+          url="https://github.com/odin-lang/Odin/releases/download/${ODIN_VERSION}/${asset}"
+          archive="${RUNNER_TEMP}/${asset}"
+          dest="${RUNNER_TEMP}/odin"
+          mkdir -p "$dest"
+          curl -L --fail --retry 3 "$url" -o "$archive"
+          tar -xzf "$archive" -C "$dest"
+          odin_bin="$(find "$dest" -type f -name odin -perm -111 | head -n 1)"
+          test -n "$odin_bin"
+          echo "$(dirname "$odin_bin")" >> "$GITHUB_PATH"
+
+      - name: Build Android APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="${ANDROID_SDK_ROOT}/cmake/3.22.1/bin:${PATH}"
+          ./build-android.sh
+          src="android/app/build/outputs/apk/debug/app-debug.apk"
+          test -f "$src"
+          mkdir -p dist
+          cp "$src" "dist/pong-android-arm64-v1.3.0.apk"
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: pong-android-arm64
+          path: dist/pong-android-arm64-v1.3.0.apk
+          if-no-files-found: error
+          retention-days: 14
+
   rendezvous-server:
     name: HTTP rendezvous server Linux x64
     runs-on: ubuntu-24.04
@@ -172,7 +239,7 @@ jobs:
   github-release:
     name: Publish GitHub release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build, rendezvous-server]
+    needs: [build, android-client, rendezvous-server]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/download-artifact@v4

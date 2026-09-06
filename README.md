@@ -1,14 +1,20 @@
-# UDP Pong — Odin + raylib (v1.2.0)
+# UDP Pong — Odin + raylib (v1.3.0)
 
 A small two-player Pong game written in Odin with raylib. Gameplay is host-authoritative UDP. Pong supports IPv4 and IPv6, LAN discovery, direct IP play, and short-code Internet play.
 
-> **App v1.2.0 · gameplay protocol v4 · discovery protocol v1 · HTTP rendezvous protocol v1**
+> **App v1.3.0 · gameplay protocol v4 · discovery protocol v1 · HTTP rendezvous protocol v1**
 >
-> Application versions and wire-protocol versions are independent. The gameplay/discovery protocols remain compatible with v1.1.0.
+> Application versions and wire-protocol versions are independent. v1.3 keeps the v1.2 wire protocols so Android and desktop clients can play together.
 
-## What's new in v1.2.0
+## What's new in v1.3.0
 
-- six-character Internet room codes
+- first Android ARM64 client (`arm64-v8a`, API 29+)
+- raylib NativeActivity + Android NDK build pipeline
+- touch menu interaction and touch paddle controls
+- Android app-private preferences and APK-packaged audio assets
+- Android Java HTTPS bridge for the Render rendezvous API
+- Android APK artifact in GitHub release CI
+- all v1.2 networking remains compatible, including six-character Internet room codes
 - **Cloudflare public STUN** (`stun.cloudflare.com:3478/udp`) to discover the public UDP mapping of the exact Pong gameplay socket
 - a separate **HTTP/HTTPS rendezvous service** for room creation and candidate exchange
 - Render-ready Go rendezvous server and root `render.yaml`
@@ -19,7 +25,7 @@ A small two-player Pong game written in Odin with raylib. Gameplay is host-autho
 - rendezvous URL is remembered locally
 - HTTPS client support through Odin's `vendor:curl`
 
-v1.2.0 does **not** include TURN/relay gameplay. Symmetric NAT, restrictive CGNAT, enterprise firewalls, or networks that block peer-to-peer UDP can still prevent a direct connection.
+v1.3.0 does **not** include TURN/relay gameplay. Symmetric NAT, restrictive CGNAT, enterprise firewalls, or networks that block peer-to-peer UDP can still prevent a direct connection.
 
 ## Connection modes
 
@@ -248,15 +254,16 @@ The Windows ZIP contains both `pong.exe` and `raylib.dll`; keep them together.
 Expected client archives:
 
 ```text
-pong-v1.2.0-windows-x64.zip
-pong-v1.2.0-linux-x64.tar.gz
-pong-v1.2.0-macos-arm64.zip
+pong-v1.3.0-windows-x64.zip
+pong-v1.3.0-linux-x64.tar.gz
+pong-v1.3.0-macos-arm64.zip
+pong-android-arm64-v1.3.0.apk
 ```
 
 GitHub Actions also builds the standalone HTTP rendezvous binary archive:
 
 ```text
-pong-rendezvous-v1.2.0-linux-x64.tar.gz
+pong-rendezvous-v1.3.0-linux-x64.tar.gz
 ```
 
 The standalone binary and the `server/` source are the same service. The binary is useful if you want to run the rendezvous API somewhere other than Render.
@@ -306,7 +313,7 @@ There is no `3478/udp` rule to open on the HTTP rendezvous server. Cloudflare ow
 
 ## Release caveats
 
-- room-code connectivity is direct-only in v1.2.0; there is no TURN/relay fallback yet
+- room-code connectivity is direct-only in v1.3.0; there is no TURN/relay fallback yet
 - rendezvous traffic is protected by HTTPS when you configure an `https://` URL; local `http://` is supported for development
 - room codes and peer tokens are short-lived and stored only in memory
 - the macOS `.app` is unsigned and unnotarized
@@ -320,3 +327,28 @@ See `THIRD_PARTY_NOTICES.md` for dependency notices.
 - Fixed an Internet-room bug where the native IPv6 candidate was returned as a string view into a local stack buffer. On machines with a global IPv6 address this could corrupt `RV_CREATE`/`RV_JOIN` and make the rendezvous service reply `BAD_REQUEST`; WSL often avoided the bug by having no advertisable global IPv6 and sending `-` instead.
 - Native IPv6 candidate text is now copied into caller-owned storage before the HTTP rendezvous payload is formatted.
 - The rendezvous server also treats malformed optional candidates as absent rather than rejecting otherwise valid room metadata.
+
+## Android (v1.3)
+
+v1.3 adds an **ARM64 Android client** while keeping gameplay protocol 4, discovery
+protocol 1, rendezvous protocol 1, Cloudflare STUN, and the Render room service
+compatible with the desktop v1.2 clients.
+
+Android uses raylib's NativeActivity backend. The build compiles raylib 6.0 against
+the Android NDK, compiles the Odin package for `linux_arm64` with the Android
+subtarget, then links both into `libmain.so` and packages an APK.
+
+Requirements: Android SDK + NDK, CMake, JDK 17, Git, and Odin `dev-2026-07`.
+On Windows, WSL is the recommended build host. Set `ANDROID_HOME` and
+`ANDROID_NDK_HOME`, then run:
+
+```bash
+./build-android.sh
+```
+
+The first target is `arm64-v8a` / API 29+. Room-code Internet play is the primary
+Android path. Touch controls use the upper/lower halves of the screen for paddle
+movement, menu widgets accept touch, config lives in app-private storage, and
+rendezvous HTTPS uses Android's Java networking rather than desktop libcurl.
+
+See `android/README.md` for setup, installation, and current caveats.

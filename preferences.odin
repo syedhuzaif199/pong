@@ -11,7 +11,13 @@ CONFIG_FILE :: "pong.cfg"
 CONFIG_DIR_NAME :: "IPv6UDPPong"
 
 config_directory :: proc() -> string {
-    when ODIN_OS == .Windows {
+    when PONG_ANDROID {
+        path_buf: [512]u8
+        path := platform_internal_data_path(path_buf[:])
+        if len(path) > 0 {
+            return fmt.tprintf("%s%c%s", path, os.Path_Separator, CONFIG_DIR_NAME)
+        }
+    } else when ODIN_OS == .Windows {
         base := os.get_env("APPDATA", context.temp_allocator)
         if len(base) > 0 {
             return fmt.tprintf("%s%c%s", base, os.Path_Separator, CONFIG_DIR_NAME)

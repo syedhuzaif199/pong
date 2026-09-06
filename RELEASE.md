@@ -1,6 +1,28 @@
+# UDP Pong v1.3.0
+
+## Android client
+
+- Adds the first Android ARM64 client (`arm64-v8a`, Android 10/API 29+).
+- Keeps gameplay protocol 4, discovery protocol 1, and rendezvous protocol 1 for desktop compatibility.
+- Builds raylib 6.0 for Android with the NDK and links the Odin game into a NativeActivity shared library.
+- Adds touch menu interaction and touch paddle controls.
+- Stores preferences in Android app-private storage.
+- Packages existing music/SFX as APK assets.
+- Uses Android `HttpURLConnection` for Render rendezvous HTTPS; STUN and gameplay remain native UDP.
+- Adds `build-android.sh` plus an Android Gradle project and GitHub Actions APK artifact.
+
+### First-port limitations
+
+- ARM64 only for v1.3.0.
+- Internet room-code play is the primary tested design; Android LAN broadcast discovery still needs device validation.
+- Soft-keyboard character delivery through raylib can vary by IME and needs device validation.
+- GitHub's first Android artifact is debug-signed for direct installation, not Play Store release signing.
+
+---
+
 # Releasing Pong
 
-Public releases use semantic versions such as `v1.0.0`, `v1.1.0`, and `v1.2.0`.
+Public releases use semantic versions such as `v1.0.0`, `v1.1.0`, `v1.2.0`, and `v1.3.0`.
 
 ## v1.2.0 release scope
 
@@ -114,10 +136,11 @@ For NAT traversal, test on genuinely different access networks when possible. Tw
 ## Expected release artifacts
 
 ```text
-pong-v1.2.0-windows-x64.zip
-pong-v1.2.0-linux-x64.tar.gz
-pong-v1.2.0-macos-arm64.zip
-pong-rendezvous-v1.2.0-linux-x64.tar.gz
+pong-v1.3.0-windows-x64.zip
+pong-v1.3.0-linux-x64.tar.gz
+pong-v1.3.0-macos-arm64.zip
+pong-android-arm64-v1.3.0.apk
+pong-rendezvous-v1.3.0-linux-x64.tar.gz
 ```
 
 ## Tag release
@@ -125,11 +148,11 @@ pong-rendezvous-v1.2.0-linux-x64.tar.gz
 After the tested commit is pushed:
 
 ```bash
-git tag -a v1.2.0 -m "Pong v1.2.0"
-git push origin v1.2.0
+git tag -a v1.3.0 -m "Pong v1.3.0"
+git push origin v1.3.0
 ```
 
-The GitHub Actions workflow builds all client archives plus the Linux x64 HTTP rendezvous binary and attaches them to the GitHub Release.
+The GitHub Actions workflow builds all desktop archives, the Android ARM64 APK, plus the Linux x64 HTTP rendezvous binary and attaches them to the GitHub Release.
 
 ## Windows release note
 

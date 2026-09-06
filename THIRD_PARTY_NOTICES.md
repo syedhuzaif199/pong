@@ -31,3 +31,9 @@ mbed TLS: https://github.com/Mbed-TLS/mbedtls
 zlib: https://zlib.net/
 
 The audio files in `assets/` were created specifically for this Pong project and are not third-party music or sound assets.
+
+
+## Android v1.3
+
+The Android client builds raylib 6.0 from source for `arm64-v8a` using the Android NDK.
+Rendezvous HTTPS on Android uses the platform `HttpURLConnection` API rather than libcurl.

@@ -6,3 +6,13 @@ pong.exe
 *.dSYM/
 .DS_Store
 server/pong-rendezvous
+# Android generated files
+android/.build/
+android/.deps/
+android/.gradle/
+android/app/build/
+android/app/src/main/jniLibs/
+android/app/src/main/assets/
+android/gradle/
+android/gradlew
+android/gradlew.bat

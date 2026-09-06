@@ -6,7 +6,7 @@ import "core:os"
 import "core:strconv"
 import rl "vendor:raylib"
 
-APP_VERSION :: "v1.2.0"
+APP_VERSION :: "v1.3.0"
 PRE_COUNTDOWN_FADE_TIME :: f32(0.40)
 LAN_IPV4_FALLBACK_DELAY :: f64(0.75)
 
@@ -75,6 +75,8 @@ App :: struct {
 }
 
 prepare_runtime_directory :: proc() {
+    when PONG_ANDROID { return }
+
     original_dir, original_err := os.get_working_directory(context.temp_allocator)
     executable_dir, executable_err := os.get_executable_directory(context.temp_allocator)
     if executable_err != nil {
@@ -95,16 +97,22 @@ prepare_runtime_directory :: proc() {
     }
 }
 
-main :: proc() {
+run_game :: proc() {
     prepare_runtime_directory()
     http_ready := internet_http_init()
     defer if http_ready { internet_http_shutdown() }
 
-    rl.SetConfigFlags({.VSYNC_HINT, .WINDOW_RESIZABLE})
-    rl.InitWindow(WINDOW_W, WINDOW_H, "UDP Pong")
+    when PONG_ANDROID {
+        rl.SetConfigFlags({.VSYNC_HINT})
+        rl.InitWindow(0, 0, "UDP Pong")
+        rl.SetTargetFPS(60)
+    } else {
+        rl.SetConfigFlags({.VSYNC_HINT, .WINDOW_RESIZABLE})
+        rl.InitWindow(WINDOW_W, WINDOW_H, "UDP Pong")
+        rl.SetWindowMinSize(640, 360)
+        rl.SetTargetFPS(120)
+    }
     defer rl.CloseWindow()
-    rl.SetWindowMinSize(640, 360)
-    rl.SetTargetFPS(120)
     // Keep Escape available to our menus instead of letting raylib close the window.
     rl.SetExitKey(.KEY_NULL)
 
@@ -126,8 +134,10 @@ main :: proc() {
     app.render_game = app.game
     app.target_game = app.game
 
-    if app.preferences.fullscreen != rl.IsWindowFullscreen() {
-        rl.ToggleFullscreen()
+    when !PONG_ANDROID {
+        if app.preferences.fullscreen != rl.IsWindowFullscreen() {
+            rl.ToggleFullscreen()
+        }
     }
 
     rl.InitAudioDevice()
@@ -152,6 +162,8 @@ main :: proc() {
             music_update(&app.music, app.preferences, dt)
         }
 
+        ui_begin_frame()
+
         rl.BeginTextureMode(canvas)
         rl.ClearBackground(BG)
         draw_app(&app)
@@ -166,6 +178,7 @@ main :: proc() {
         rl.ClearBackground(rl.Color{5, 6, 9, 255})
         present_logical_canvas(canvas)
         rl.EndDrawing()
+        ui_end_frame()
     }
 
     save_config(app.preferences, app.last_game_rules)
@@ -179,6 +192,18 @@ main :: proc() {
         music_unload(&app.music)
         audio_unload_sfx(&app.audio)
         rl.CloseAudioDevice()
+    }
+}
+
+
+when PONG_ANDROID {
+    @(export)
+    pong_android_game_main :: proc "c" () {
+        run_game()
+    }
+} else {
+    main :: proc() {
+        run_game()
     }
 }
 
@@ -217,18 +242,20 @@ update_app :: proc(app: ^App, dt: f32) {
     app.transition_alpha = max(f32(0), app.transition_alpha - dt * 4.5)
     update_visual_fx(&app.fx, dt)
 
-    alt_down := rl.IsKeyDown(.LEFT_ALT) || rl.IsKeyDown(.RIGHT_ALT)
-    if alt_down && rl.IsKeyPressed(.ENTER) {
-        app.preferences.fullscreen = !app.preferences.fullscreen
-        app.display_change_pending = true
-        save_config(app.preferences, app.last_game_rules)
-    }
-
-    if app.display_change_pending {
-        if app.preferences.fullscreen != rl.IsWindowFullscreen() {
-            rl.ToggleFullscreen()
+    when !PONG_ANDROID {
+        alt_down := rl.IsKeyDown(.LEFT_ALT) || rl.IsKeyDown(.RIGHT_ALT)
+        if alt_down && rl.IsKeyPressed(.ENTER) {
+            app.preferences.fullscreen = !app.preferences.fullscreen
+            app.display_change_pending = true
+            save_config(app.preferences, app.last_game_rules)
         }
-        app.display_change_pending = false
+
+        if app.display_change_pending {
+            if app.preferences.fullscreen != rl.IsWindowFullscreen() {
+                rl.ToggleFullscreen()
+            }
+            app.display_change_pending = false
+        }
     }
 
     switch app.screen {
@@ -236,7 +263,7 @@ update_app :: proc(app: ^App, dt: f32) {
         // Buttons perform transitions in draw_main_menu.
 
     case .Online:
-        if rl.IsKeyPressed(.ESCAPE) {
+        if platform_window_back_pressed() {
             app.screen = .Main_Menu
         }
 
@@ -260,7 +287,7 @@ update_app :: proc(app: ^App, dt: f32) {
         if app.preferences.player_name.length > MAX_PLAYER_NAME {
             app.preferences.player_name.length = MAX_PLAYER_NAME
         }
-        if rl.IsKeyPressed(.ESCAPE) {
+        if platform_window_back_pressed() {
             sanitize_player_name(&app.preferences.player_name)
             save_config(app.preferences, app.last_game_rules)
             app.screen = .Main_Menu
@@ -277,7 +304,7 @@ update_host_setup :: proc(app: ^App) {
         text_field_update(&app.port, allow_port_char)
     }
 
-    if rl.IsKeyPressed(.ESCAPE) {
+    if platform_window_back_pressed() {
         if controls_disabled {
             discovery_host_shutdown(&app.discovery_host)
             net_shutdown(&app.net)
@@ -314,7 +341,7 @@ update_join_setup :: proc(app: ^App) {
         text_field_update(&app.port, allow_port_char)
     }
 
-    if rl.IsKeyPressed(.ESCAPE) {
+    if platform_window_back_pressed() {
         if controls_disabled {
             clear_lan_fallback(app)
             net_shutdown(&app.net)
@@ -461,7 +488,7 @@ update_internet_host :: proc(app: ^App) {
         text_field_update(&app.rendezvous_url, allow_server_url_char)
     }
 
-    if rl.IsKeyPressed(.ESCAPE) {
+    if platform_window_back_pressed() {
         if active {
             internet_cancel(&app.internet, &app.net)
             app.online_status = .Idle
@@ -508,7 +535,7 @@ update_internet_join :: proc(app: ^App) {
         if app.room_code.length > 8 { app.room_code.length = 8 }
     }
 
-    if rl.IsKeyPressed(.ESCAPE) {
+    if platform_window_back_pressed() {
         if active {
             internet_cancel(&app.internet, &app.net)
             app.online_status = .Idle
@@ -571,7 +598,7 @@ join_setup_return_screen :: proc(app: ^App) -> Screen {
 }
 
 update_lobby :: proc(app: ^App, dt: f32) {
-    if rl.IsKeyPressed(.ESCAPE) {
+    if platform_window_back_pressed() {
         cancel_match_start_fade(app)
         net_shutdown(&app.net)
         app.online_status = .Idle
@@ -670,7 +697,7 @@ update_lobby :: proc(app: ^App, dt: f32) {
 }
 
 update_game :: proc(app: ^App, dt: f32) {
-    if rl.IsKeyPressed(.ESCAPE) {
+    if platform_window_back_pressed() {
         if app.pause_settings {
             app.pause_settings = false
             save_config(app.preferences, app.last_game_rules)

@@ -14,6 +14,42 @@ GOOD :: rl.Color{114, 220, 151, 255}
 
 ui_click_requested: bool
 
+ui_touch_was_down: bool
+ui_touch_down: bool
+ui_touch_pressed: bool
+ui_touch_position: [2]f32
+
+ui_begin_frame :: proc() {
+    when PONG_ANDROID {
+        ui_touch_down = rl.GetTouchPointCount() > 0
+        ui_touch_pressed = ui_touch_down && !ui_touch_was_down
+        if ui_touch_down {
+            ui_touch_position = rl.GetTouchPosition(0)
+        }
+    }
+}
+
+ui_end_frame :: proc() {
+    when PONG_ANDROID {
+        ui_touch_was_down = ui_touch_down
+    }
+}
+
+ui_primary_pressed :: proc() -> bool {
+    when PONG_ANDROID {
+        return ui_touch_pressed
+    } else {
+        return rl.IsMouseButtonPressed(.LEFT)
+    }
+}
+
+ui_primary_position :: proc() -> [2]f32 {
+    when PONG_ANDROID {
+        if ui_touch_down || ui_touch_was_down { return ui_touch_position }
+    }
+    return rl.GetMousePosition()
+}
+
 request_ui_click :: proc() {
     ui_click_requested = true
 }
@@ -128,7 +164,7 @@ allow_room_code_char :: proc(ch: rune) -> bool {
 // Convert physical-window mouse coordinates back into our fixed 960x540
 // logical canvas. This lets the same UI work in a resized or fullscreen window.
 logical_mouse_position :: proc() -> [2]f32 {
-    mouse := rl.GetMousePosition()
+    mouse := ui_primary_position()
     screen_w := f32(rl.GetScreenWidth())
     screen_h := f32(rl.GetScreenHeight())
 
@@ -231,7 +267,7 @@ button :: proc(label: string, rect: rl.Rectangle, enabled := true) -> bool {
     ty := i32(rect.y + (rect.height - 22) * 0.5)
     rl.DrawText(ctext, tx, ty, 22, text_colour)
 
-    clicked := hot && rl.IsMouseButtonPressed(.LEFT)
+    clicked := hot && ui_primary_pressed()
     if clicked { request_ui_click() }
     return clicked
 }
@@ -239,12 +275,14 @@ button :: proc(label: string, rect: rl.Rectangle, enabled := true) -> bool {
 text_field :: proc(label: string, field: ^Text_Field, rect: rl.Rectangle, enabled := true) -> bool {
     mouse := logical_mouse_position()
     hot := enabled && rl.CheckCollisionPointRec(mouse, rect)
-    clicked := hot && rl.IsMouseButtonPressed(.LEFT)
+    clicked := hot && ui_primary_pressed()
     if clicked {
         request_ui_click()
         field.active = true
-    } else if rl.IsMouseButtonPressed(.LEFT) && !hot {
+        platform_show_keyboard(true)
+    } else if ui_primary_pressed() && !hot {
         field.active = false
+        platform_show_keyboard(false)
     }
     if !enabled {
         field.active = false

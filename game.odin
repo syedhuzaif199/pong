@@ -245,14 +245,21 @@ interpolate_render_state :: proc(render: ^Game_State, target: Game_State, dt: f3
 }
 
 local_input_direction :: proc() -> f32 {
-    up := rl.IsKeyDown(.W) || rl.IsKeyDown(.UP)
-    down := rl.IsKeyDown(.S) || rl.IsKeyDown(.DOWN)
+    when PONG_ANDROID {
+        if rl.GetTouchPointCount() <= 0 { return 0 }
+        touch := rl.GetTouchPosition(0)
+        screen_h := f32(rl.GetScreenHeight())
+        if screen_h <= 0 { return 0 }
+        // Mobile control: touch upper half to move up, lower half to move down.
+        // It is intentionally stateless so host/client prediction remains unchanged.
+        if touch[1] < screen_h * 0.5 { return -1 }
+        return 1
+    } else {
+        up := rl.IsKeyDown(.W) || rl.IsKeyDown(.UP)
+        down := rl.IsKeyDown(.S) || rl.IsKeyDown(.DOWN)
 
-    if up == down {
-        return 0
+        if up == down { return 0 }
+        if up { return -1 }
+        return 1
     }
-    if up {
-        return -1
-    }
-    return 1
 }

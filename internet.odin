@@ -10,7 +10,7 @@ import curl "vendor:curl"
 import rl "vendor:raylib"
 
 RENDEZVOUS_VERSION :: 1
-RENDEZVOUS_DEFAULT_URL :: "http://127.0.0.1:10000"
+RENDEZVOUS_DEFAULT_URL :: "https://pong-rendezvous.onrender.com"
 RENDEZVOUS_CONTROL_INTERVAL :: f64(0.75)
 RENDEZVOUS_HTTP_TIMEOUT_MS :: c.long(6000)
 RENDEZVOUS_LEAVE_TIMEOUT_MS :: c.long(1500)
@@ -86,14 +86,22 @@ Internet_State :: struct {
 internet_http_ready: bool
 
 internet_http_init :: proc() -> bool {
-    internet_http_ready = curl.global_init(curl.GLOBAL_ALL) == nil
+    when PONG_ANDROID {
+        internet_http_ready = true
+    } else {
+        internet_http_ready = curl.global_init(curl.GLOBAL_ALL) == nil
+    }
     return internet_http_ready
 }
 
 internet_http_shutdown :: proc() {
-    if internet_http_ready {
-        curl.global_cleanup()
+    when PONG_ANDROID {
         internet_http_ready = false
+    } else {
+        if internet_http_ready {
+            curl.global_cleanup()
+            internet_http_ready = false
+        }
     }
 }
 
@@ -196,38 +204,49 @@ internet_http_post :: proc(
     if payload_err != nil { return }
     defer delete(payload_c, context.temp_allocator)
 
-    handle := curl.easy_init()
-    if handle == nil { return }
-    defer curl.easy_cleanup(handle)
+    when PONG_ANDROID {
+        count := int(pong_android_http_post(
+            url_c,
+            payload_c,
+            cast([^]u8)raw_data(output),
+            i32(len(output)),
+            i32(timeout_ms),
+        ))
+        if count <= 0 || count > len(output) { return }
+        return count, true
+    } else {
+        handle := curl.easy_init()
+        if handle == nil { return }
+        defer curl.easy_cleanup(handle)
 
-    response := Internet_HTTP_Buffer{}
+        response := Internet_HTTP_Buffer{}
 
-    _ = curl.easy_setopt(handle, .URL, url_c)
-    _ = curl.easy_setopt(handle, .POST, c.long(1))
-    _ = curl.easy_setopt(handle, .POSTFIELDS, payload_c)
-    _ = curl.easy_setopt(handle, .POSTFIELDSIZE, c.long(len(payload)))
-    _ = curl.easy_setopt(handle, .WRITEFUNCTION, internet_curl_write)
-    _ = curl.easy_setopt(handle, .WRITEDATA, &response)
-    _ = curl.easy_setopt(handle, .USERAGENT, cstring("UDP-Pong/1.2.0"))
-    _ = curl.easy_setopt(handle, .FOLLOWLOCATION, c.long(1))
-    // Render redirects plain HTTP to HTTPS. Preserve POST bodies across 301/302/303.
-    _ = curl.easy_setopt(handle, .POSTREDIR, c.long(curl.REDIR_POST_ALL))
-    _ = curl.easy_setopt(handle, .CONNECTTIMEOUT_MS, min(timeout_ms, c.long(4000)))
-    _ = curl.easy_setopt(handle, .TIMEOUT_MS, timeout_ms)
-    _ = curl.easy_setopt(handle, .NOSIGNAL, c.long(1))
+        _ = curl.easy_setopt(handle, .URL, url_c)
+        _ = curl.easy_setopt(handle, .POST, c.long(1))
+        _ = curl.easy_setopt(handle, .POSTFIELDS, payload_c)
+        _ = curl.easy_setopt(handle, .POSTFIELDSIZE, c.long(len(payload)))
+        _ = curl.easy_setopt(handle, .WRITEFUNCTION, internet_curl_write)
+        _ = curl.easy_setopt(handle, .WRITEDATA, &response)
+        _ = curl.easy_setopt(handle, .USERAGENT, cstring("UDP-Pong/1.3.0"))
+        _ = curl.easy_setopt(handle, .FOLLOWLOCATION, c.long(1))
+        _ = curl.easy_setopt(handle, .POSTREDIR, c.long(curl.REDIR_POST_ALL))
+        _ = curl.easy_setopt(handle, .CONNECTTIMEOUT_MS, min(timeout_ms, c.long(4000)))
+        _ = curl.easy_setopt(handle, .TIMEOUT_MS, timeout_ms)
+        _ = curl.easy_setopt(handle, .NOSIGNAL, c.long(1))
 
-    result := curl.easy_perform(handle)
-    if result != nil || response.overflow || response.length <= 0 { return }
+        result := curl.easy_perform(handle)
+        if result != nil || response.overflow || response.length <= 0 { return }
 
-    status: c.long
-    if curl.easy_getinfo(handle, .RESPONSE_CODE, &status) != nil || status < 200 || status >= 300 {
+        status: c.long
+        if curl.easy_getinfo(handle, .RESPONSE_CODE, &status) != nil || status < 200 || status >= 300 {
+            return
+        }
+
+        response_length = min(response.length, len(output))
+        copy(output[:response_length], response.bytes[:response_length])
+        ok = true
         return
     }
-
-    response_length = min(response.length, len(output))
-    copy(output[:response_length], response.bytes[:response_length])
-    ok = true
-    return
 }
 
 internet_ipv4_to_mapped_ipv6 :: proc(ip4: net.IP4_Address) -> net.IP6_Address {
