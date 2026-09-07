@@ -7,7 +7,7 @@ import "core:strconv"
 import "core:strings"
 import rl "vendor:raylib"
 
-PROTOCOL_VERSION :: 4
+PROTOCOL_VERSION :: 5
 HELLO_INTERVAL :: 0.50
 STATE_INTERVAL :: 1.0 / 60.0
 INPUT_INTERVAL :: 1.0 / 60.0
@@ -278,16 +278,27 @@ net_send_text :: proc(n: ^Net_State, text: string) -> bool {
 }
 
 send_welcome :: proc(n: ^Net_State, hello_nonce: u32, rules: Game_Rules) {
-    buf: [320]u8
+    win_by_two: int = 0
+    spin: int = 0
+    accel: int = 0
+    if rules.win_by_two { win_by_two = 1 }
+    if rules.paddle_spin { spin = 1 }
+    if rules.ball_acceleration { accel = 1 }
+
+    buf: [384]u8
     msg := fmt.bprintf(
         buf[:],
-        "WELCOME|%d|%d|%d|%d|%.0f|%.0f|%s",
+        "WELCOME|%d|%d|%d|%d|%.0f|%.0f|%d|%d|%d|%d|%s",
         PROTOCOL_VERSION,
         hello_nonce,
         n.session_id,
         rules.winning_score,
         rules.ball_speed,
         rules.paddle_speed,
+        normalize_best_of(rules.best_of),
+        win_by_two,
+        spin,
+        accel,
         local_player_name(n),
     )
     _ = net_send_text(n, msg)
@@ -411,10 +422,10 @@ send_state :: proc(n: ^Net_State, g: Game_State) {
     over: int = 0
     if g.game_over { over = 1 }
 
-    buf: [512]u8
+    buf: [768]u8
     msg := fmt.bprintf(
         buf[:],
-        "STATE|%d|%d|%.3f|%.3f|%.3f|%.3f|%.3f|%.3f|%d|%d|%d|%d|%.3f|%.0f|%.3f|%.3f",
+        "STATE|%d|%d|%.3f|%.3f|%.3f|%.3f|%.3f|%.3f|%d|%d|%d|%d|%.3f|%.0f|%.3f|%.3f|%d|%d|%d|%.3f|%d|%d|%d|%d|%.3f|%.3f",
         n.session_id,
         n.send_seq,
         g.ball_x,
@@ -431,6 +442,16 @@ send_state :: proc(n: ^Net_State, g: Game_State) {
         g.serve_dir,
         g.countdown_timer,
         g.go_timer,
+        g.games1,
+        g.games2,
+        g.last_game_winner,
+        g.between_games_timer,
+        g.total_points1,
+        g.total_points2,
+        g.current_rally,
+        g.longest_rally,
+        g.fastest_ball,
+        g.match_elapsed,
     )
     if net_send_text(n, msg) { n.last_stream_send_time = rl.GetTime() }
 }
@@ -687,8 +708,13 @@ net_receive_client :: proc(n: ^Net_State, rules: ^Game_Rules, target: ^Game_Stat
             win, win_ok := next_int(&rest)
             ball, ball_ok := next_f32(&rest)
             paddle, paddle_ok := next_f32(&rest)
+            best_of, best_of_ok := next_int(&rest)
+            win_by_two, win_by_two_ok := next_int(&rest)
+            spin, spin_ok := next_int(&rest)
+            accel, accel_ok := next_int(&rest)
             host_name, name_ok := next_string(&rest)
-            if v_ok && nonce_ok && session_ok && win_ok && ball_ok && paddle_ok && name_ok &&
+            if v_ok && nonce_ok && session_ok && win_ok && ball_ok && paddle_ok && best_of_ok &&
+               win_by_two_ok && spin_ok && accel_ok && name_ok &&
                version == PROTOCOL_VERSION && echoed_nonce == n.hello_nonce && session_id != 0 {
                 if n.session_valid && session_id != n.session_id { continue }
                 n.peer = remote
@@ -702,6 +728,10 @@ net_receive_client :: proc(n: ^Net_State, rules: ^Game_Rules, target: ^Game_Stat
                 rules.winning_score = win
                 rules.ball_speed = ball
                 rules.paddle_speed = paddle
+                rules.best_of = normalize_best_of(best_of)
+                rules.win_by_two = win_by_two != 0
+                rules.paddle_spin = spin != 0
+                rules.ball_acceleration = accel != 0
                 welcomed = true
             }
             continue
@@ -907,8 +937,20 @@ parse_state :: proc(rest_value: string) -> (Game_State, u32, bool) {
     serve_dir, ok12 := next_f32(&rest)
     countdown_timer, ok13 := next_f32(&rest)
     go_timer, ok14 := next_f32(&rest)
+    games1, ok15 := next_int(&rest)
+    games2, ok16 := next_int(&rest)
+    last_game_winner, ok17 := next_int(&rest)
+    between_games_timer, ok18 := next_f32(&rest)
+    total_points1, ok19 := next_int(&rest)
+    total_points2, ok20 := next_int(&rest)
+    current_rally, ok21 := next_int(&rest)
+    longest_rally, ok22 := next_int(&rest)
+    fastest_ball, ok23 := next_f32(&rest)
+    match_elapsed, ok24 := next_f32(&rest)
 
-    if !(ok0 && ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 && ok11 && ok12 && ok13 && ok14) {
+    if !(ok0 && ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 &&
+         ok11 && ok12 && ok13 && ok14 && ok15 && ok16 && ok17 && ok18 && ok19 && ok20 &&
+         ok21 && ok22 && ok23 && ok24) {
         return Game_State{}, 0, false
     }
 
@@ -921,6 +963,16 @@ parse_state :: proc(rest_value: string) -> (Game_State, u32, bool) {
         p2_y = p2y,
         score1 = s1,
         score2 = s2,
+        games1 = games1,
+        games2 = games2,
+        last_game_winner = last_game_winner,
+        between_games_timer = between_games_timer,
+        total_points1 = total_points1,
+        total_points2 = total_points2,
+        current_rally = current_rally,
+        longest_rally = longest_rally,
+        fastest_ball = fastest_ball,
+        match_elapsed = match_elapsed,
         game_over = over != 0,
         winner = winner,
         serve_timer = serve_timer,

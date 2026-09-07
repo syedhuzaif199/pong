@@ -6,7 +6,7 @@ import "core:os"
 import "core:strconv"
 import rl "vendor:raylib"
 
-APP_VERSION :: "v1.5.0"
+APP_VERSION :: "v1.6.0"
 PRE_COUNTDOWN_FADE_TIME :: f32(0.40)
 LAN_IPV4_FALLBACK_DELAY :: f64(0.75)
 
@@ -90,6 +90,13 @@ App :: struct {
     connection_was_interrupted: bool,
     reconnect_notice_timer: f32,
     resume_notice_timer: f32,
+
+    match_rtt_sum_ms: f64,
+    match_rtt_samples: int,
+    match_rtt_sample_timer: f32,
+    game_history1: [7]int,
+    game_history2: [7]int,
+    game_history_count: int,
 }
 
 prepare_runtime_directory :: proc() {
@@ -753,6 +760,7 @@ update_lobby :: proc(app: ^App, dt: f32) {
                 clear_ready_state(&app.net)
                 clear_rematch_state(&app.net)
                 begin_match_countdown(&app.game)
+                reset_match_rtt_stats(app)
                 app.render_game = app.game
                 app.target_game = app.game
                 send_state(&app.net, app.game)
@@ -770,6 +778,7 @@ update_lobby :: proc(app: ^App, dt: f32) {
         _, _, got_state := net_receive_client(&app.net, &app.network_rules, &app.target_game)
         update_connection_feedback(app)
         if got_state {
+            reset_match_rtt_stats(app)
             cancel_match_start_fade(app)
             clear_ready_state(&app.net)
             app.render_game = app.target_game
@@ -822,6 +831,7 @@ start_local_match :: proc(app: ^App) {
     save_app_config(app)
 
     begin_match_countdown(&app.game)
+    reset_match_rtt_stats(app)
     app.render_game = app.game
     app.target_game = app.game
     reset_cpu_ai(&app.cpu_ai)
@@ -835,6 +845,7 @@ start_local_match :: proc(app: ^App) {
 start_local_rematch :: proc(app: ^App) {
     cancel_match_start_fade(app)
     begin_match_countdown(&app.game)
+    reset_match_rtt_stats(app)
     app.render_game = app.game
     app.target_game = app.game
     reset_cpu_ai(&app.cpu_ai)
@@ -901,6 +912,8 @@ update_game :: proc(app: ^App, dt: f32) {
         return
     }
 
+    update_match_rtt_stats(app, dt)
+
     direction: f32 = 0
     if !app.paused {
         direction = input_paddle_direction(&app.input)
@@ -956,6 +969,7 @@ update_game :: proc(app: ^App, dt: f32) {
                     clear_rematch_state(&app.net)
                     send_rematch_state(&app.net)
                     begin_match_countdown(&app.game)
+                    reset_match_rtt_stats(app)
                     begin_mobile_control_hint(app)
                     app.render_game = app.game
                     app.paused = false
@@ -986,6 +1000,7 @@ update_game :: proc(app: ^App, dt: f32) {
         if got_state {
             process_game_events(app, before, app.target_game)
             if before.game_over && !app.target_game.game_over && app.target_game.countdown_timer > 0 {
+                reset_match_rtt_stats(app)
                 cancel_match_start_fade(app)
                 app.paused = false
                 app.pause_settings = false
@@ -1026,7 +1041,8 @@ update_game :: proc(app: ^App, dt: f32) {
             interpolate_render_state(&app.render_game, app.target_game, dt, client_prediction_horizon(&app.net), max(app.net.rtt_jitter_ms, app.net.state_jitter_ms))
         }
 
-        if !interrupted && !app.paused && app.render_game.countdown_timer <= 0 && !app.render_game.game_over {
+        if !interrupted && !app.paused && app.render_game.countdown_timer <= 0 &&
+           app.render_game.between_games_timer <= 0 && !app.render_game.game_over {
             move_paddle(&app.render_game.p2_y, direction, app.network_rules.paddle_speed, dt)
         }
 
@@ -1159,7 +1175,7 @@ draw_main_menu :: proc(app: ^App) {
 
     draw_text_centered("VS CPU, local 2-player, online room codes, LAN/direct", 488, 16, MUTED)
     version_buf: [128]u8
-    version_text := fmt.bprintf(version_buf[:], "%s  |  protocol 4  |  discovery 1  |  rendezvous 1", APP_VERSION)
+    version_text := fmt.bprintf(version_buf[:], "%s  |  protocol 5  |  discovery 1  |  rendezvous 1", APP_VERSION)
     draw_text(version_text, 18, WINDOW_H - 24, 13, MUTED)
 }
 
@@ -1223,12 +1239,13 @@ draw_local_setup :: proc(app: ^App) {
     _ = setting_row_int("Winning score", &app.last_game_rules.winning_score, y, 1, 21, 1)
     _ = setting_row_f32("Ball speed", &app.last_game_rules.ball_speed, y + 58, 250, 900, 25)
     _ = setting_row_f32("Paddle speed", &app.last_game_rules.paddle_speed, y + 116, 250, 900, 25)
+    draw_competitive_rules_controls(&app.last_game_rules, y + 176)
 
-    if button("START MATCH", rl.Rectangle{330, 405, 300, 52}) {
+    if button("START MATCH", rl.Rectangle{330, 414, 300, 48}) {
         start_local_match(app)
         return
     }
-    if button("BACK", rl.Rectangle{360, 474, 240, 44}) {
+    if button("BACK", rl.Rectangle{360, 480, 240, 42}) {
         save_app_config(app)
         app.screen = .Local_Play
     }
@@ -1282,19 +1299,20 @@ draw_internet_host :: proc(app: ^App) {
 
     text_field("Rendezvous URL", &app.rendezvous_url, rl.Rectangle{190, 94, 610, 44}, !active, .Uri)
 
-    _ = setting_row_int("Winning score", &app.last_game_rules.winning_score, 156, 1, 21, 1, !active)
-    _ = setting_row_f32("Ball speed", &app.last_game_rules.ball_speed, 208, 250, 900, 25, !active)
-    _ = setting_row_f32("Paddle speed", &app.last_game_rules.paddle_speed, 260, 250, 900, 25, !active)
+    _ = setting_row_int("Winning score", &app.last_game_rules.winning_score, 150, 1, 21, 1, !active)
+    _ = setting_row_f32("Ball speed", &app.last_game_rules.ball_speed, 198, 250, 900, 25, !active)
+    _ = setting_row_f32("Paddle speed", &app.last_game_rules.paddle_speed, 246, 250, 900, 25, !active)
+    draw_competitive_rules_controls(&app.last_game_rules, 300, !active)
 
-    if button("CREATE ROOM", rl.Rectangle{330, 320, 300, 48}, !active) {
+    if button("CREATE ROOM", rl.Rectangle{330, 350, 300, 46}, !active) {
         start_internet_hosting(app)
     }
 
     code := internet_room_code(&app.internet)
     if len(code) > 0 {
-        draw_text_centered("ROOM CODE", 382, 14, MUTED)
-        draw_text_centered(code, 402, 36, ACCENT)
-        if button("COPY CODE", rl.Rectangle{660, 397, 150, 38}) {
+        draw_text_centered("ROOM CODE", 404, 13, MUTED)
+        draw_text_centered(code, 422, 32, ACCENT)
+        if button("COPY CODE", rl.Rectangle{660, 420, 150, 36}) {
             clipboard_set_text(code)
             app.status_message = "Room code copied."
         }
@@ -1305,7 +1323,7 @@ draw_internet_host :: proc(app: ^App) {
         endpoint := internet_public_endpoint_text(&app.internet, endpoint_buf[:])
         public_buf: [192]u8
         public_text := fmt.bprintf(public_buf[:], "STUN public endpoint: %s", endpoint)
-        draw_text_centered(public_text, 452, 13, MUTED)
+        draw_text_centered(public_text, 458, 13, MUTED)
     }
 
     if active || app.internet.phase == .Error {
@@ -1438,18 +1456,19 @@ draw_host_setup :: proc(app: ^App) {
     draw_text_centered("HOST GAME", 28, 42, FG)
     draw_text_centered("Choose this match's rules. They are remembered for your next hosted game.", 76, 16, MUTED)
 
-    text_field("Port", &app.port, rl.Rectangle{370, 112, 220, 48}, !controls_disabled, .Number)
+    text_field("Port", &app.port, rl.Rectangle{370, 104, 220, 46}, !controls_disabled, .Number)
 
-    _ = setting_row_int("Winning score", &app.last_game_rules.winning_score, 178, 1, 21, 1, !controls_disabled)
-    _ = setting_row_f32("Ball speed", &app.last_game_rules.ball_speed, 236, 250, 900, 25, !controls_disabled)
-    _ = setting_row_f32("Paddle speed", &app.last_game_rules.paddle_speed, 294, 250, 900, 25, !controls_disabled)
+    _ = setting_row_int("Winning score", &app.last_game_rules.winning_score, 160, 1, 21, 1, !controls_disabled)
+    _ = setting_row_f32("Ball speed", &app.last_game_rules.ball_speed, 212, 250, 900, 25, !controls_disabled)
+    _ = setting_row_f32("Paddle speed", &app.last_game_rules.paddle_speed, 264, 250, 900, 25, !controls_disabled)
+    draw_competitive_rules_controls(&app.last_game_rules, 320, !controls_disabled)
 
-    if button("START HOSTING", rl.Rectangle{215, 366, 300, 50}, !controls_disabled) {
+    if button("START HOSTING", rl.Rectangle{215, 370, 300, 46}, !controls_disabled) {
         start_hosting(app)
     }
 
     copy_enabled := controls_disabled && (app.discovery_host.ipv6_length > 0 || app.discovery_host.ipv4_length > 0)
-    if button("COPY INVITE", rl.Rectangle{535, 366, 210, 50}, copy_enabled) {
+    if button("COPY INVITE", rl.Rectangle{535, 370, 210, 46}, copy_enabled) {
         copy_host_invite(app)
     }
 
@@ -1774,31 +1793,34 @@ draw_lobby :: proc(app: ^App) {
     rules_buf: [192]u8
     rules_text := fmt.bprintf(
         rules_buf[:],
-        "First to %d   |   Ball %.0f   |   Paddle %.0f",
+        "Game to %d   |   Ball %.0f   |   Paddle %.0f",
         app.network_rules.winning_score,
         app.network_rules.ball_speed,
         app.network_rules.paddle_speed,
     )
-    draw_text_centered(rules_text, 306, 17, MUTED)
+    draw_text_centered(rules_text, 296, 16, MUTED)
+    competitive_buf: [192]u8
+    competitive_text := competitive_rules_summary(app.network_rules, competitive_buf[:])
+    draw_text_centered(competitive_text, 322, 15, MUTED)
 
     ready_label := "READY UP"
     if app.net.local_ready { ready_label = "UNREADY" }
-    if button(ready_label, rl.Rectangle{330, 356, 300, 56}, !app.match_start_pending) {
+    if button(ready_label, rl.Rectangle{330, 360, 300, 52}, !app.match_start_pending) {
         net_set_local_ready(&app.net, !app.net.local_ready)
     }
     when !PONG_ANDROID {
-        draw_text_centered("ENTER / controller A toggles ready", 418, 13, MUTED)
+        draw_text_centered("ENTER / controller A toggles ready", 416, 13, MUTED)
     }
 
     if app.net.local_ready && !app.net.remote_ready {
-        draw_text_centered("Waiting for opponent...", 426, 17, MUTED)
+        draw_text_centered("Waiting for opponent...", 434, 16, MUTED)
     } else if !app.net.local_ready && app.net.remote_ready {
-        draw_text_centered("Opponent is ready.", 426, 17, GOOD)
+        draw_text_centered("Opponent is ready.", 434, 16, GOOD)
     } else if app.net.local_ready && app.net.remote_ready {
-        draw_text_centered("Starting match...", 426, 17, GOOD)
+        draw_text_centered("Starting match...", 434, 16, GOOD)
     }
 
-    if button("LEAVE LOBBY", rl.Rectangle{360, 470, 240, 46}) {
+    if button("LEAVE LOBBY", rl.Rectangle{360, 478, 240, 44}) {
         cancel_match_start_fade(app)
         net_shutdown(&app.net)
         app.online_status = .Idle
@@ -1902,8 +1924,9 @@ draw_game_screen :: proc(app: ^App) {
     names_buf: [160]u8
     names := fmt.bprintf(names_buf[:], "%s  vs  %s", host_name, client_name)
     draw_text_centered(names, 78, 16, MUTED)
+    draw_match_progress(g, app.network_rules, 100)
     if app.match_mode == .Online {
-        draw_connection_banner(app, 102)
+        draw_connection_banner(app, 120)
     }
     when PONG_ANDROID {
         if !app.paused && button("MENU", rl.Rectangle{WINDOW_W - 138, 12, 120, 44}) {
@@ -1943,7 +1966,9 @@ draw_game_screen :: proc(app: ^App) {
         draw_text(counts, 18, WINDOW_H - 26, 15, MUTED)
     }
 
-    if g.countdown_timer > 0 {
+    if g.between_games_timer > 0 && !g.game_over {
+        draw_between_game_overlay(g, host_name, client_name)
+    } else if g.countdown_timer > 0 {
         countdown := "1"
         if g.countdown_timer > 2 { countdown = "3" } else if g.countdown_timer > 1 { countdown = "2" }
         rl.DrawRectangle(0, 0, WINDOW_W, WINDOW_H, rl.Color{7, 8, 12, 100})
@@ -1974,47 +1999,7 @@ draw_game_screen :: proc(app: ^App) {
     }
 
     if g.game_over {
-        rl.DrawRectangle(0, 0, WINDOW_W, WINDOW_H, rl.Color{7, 8, 12, 205})
-        winner_name := host_name
-        if g.winner == 2 { winner_name = client_name }
-        win_buf: [128]u8
-        winner_text := fmt.bprintf(win_buf[:], "%s WINS", winner_name)
-        draw_text_centered(winner_text, 160, 42, FG)
-
-        if app.match_mode == .Online {
-            local_status := "YOU: NOT READY"
-            opponent_status := "OPPONENT: NOT READY"
-            if app.net.local_rematch { local_status = "YOU: REMATCH READY" }
-            if app.net.remote_rematch { opponent_status = "OPPONENT: REMATCH READY" }
-            local_colour := MUTED
-            opponent_colour := MUTED
-            if app.net.local_rematch { local_colour = GOOD }
-            if app.net.remote_rematch { opponent_colour = GOOD }
-            draw_text_centered(local_status, 225, 18, local_colour)
-            draw_text_centered(opponent_status, 252, 18, opponent_colour)
-
-            rematch_label := "REMATCH"
-            rematch_enabled := !app.net.local_rematch && !app.paused
-            if app.net.local_rematch { rematch_label = "WAITING..." }
-            if button(rematch_label, rl.Rectangle{330, 305, 300, 52}, rematch_enabled) {
-                net_request_rematch(&app.net)
-            }
-            draw_text_centered("ENTER / controller A also requests a rematch", 372, 15, MUTED)
-            draw_text_centered("The next match starts when both players accept.", 410, 16, MUTED)
-        } else {
-            mode_text := "LOCAL 2P"
-            if app.match_mode == .Vs_CPU {
-                mode_text = "VS CPU"
-            }
-            draw_text_centered(mode_text, 226, 17, ACCENT)
-            if button("REMATCH", rl.Rectangle{330, 294, 300, 54}, !app.paused) {
-                start_local_rematch(app)
-            }
-            when !PONG_ANDROID {
-                draw_text_centered("ENTER / controller A also starts a rematch", 366, 15, MUTED)
-            }
-            draw_text_centered("Pause menu lets you leave or change local settings.", 407, 15, MUTED)
-        }
+        draw_match_complete_overlay(app, g, host_name, client_name)
     }
 
     if app.paused {
@@ -2029,6 +2014,8 @@ local_player_number :: proc(app: ^App) -> int {
 }
 
 process_game_events :: proc(app: ^App, before, after: Game_State) {
+    record_completed_game(app, before, after)
+
     paddle_hit := before.ball_vx != 0 && after.ball_vx != 0 &&
                   ((before.ball_vx < 0 && after.ball_vx > 0) ||
                    (before.ball_vx > 0 && after.ball_vx < 0))

@@ -1,11 +1,17 @@
-# UDP Pong — Odin + raylib (v1.5.0)
+# UDP Pong — Odin + raylib (v1.6.0)
 
 A small Pong game written in Odin with raylib, with solo CPU, local 2-player, and online multiplayer. Gameplay is host-authoritative UDP. Pong supports IPv4 and IPv6, LAN discovery, direct IP play, short-code Internet play, desktop controllers, and Android touch controls.
 
-> **App v1.5.0 · gameplay protocol v4 · discovery protocol v1 · HTTP rendezvous protocol v1**
+> **App v1.6.0 · gameplay protocol v5 · discovery protocol v1 · HTTP rendezvous protocol v1**
 >
-> Application versions and wire-protocol versions are independent. v1.5 keeps gameplay protocol 4, so its online mode remains wire-compatible with v1.3/v1.4 peers.
+> Application versions and wire-protocol versions are independent. v1.6 bumps gameplay protocol to 5 because competitive match rules and set state are synchronized; protocol-4 peers are intentionally rejected.
 
+
+## What's new in v1.6.0
+
+Competitive Play adds best-of match sets, win-by-two scoring, paddle spin, optional ball acceleration, multi-game match flow, and a richer match-complete summary. The host owns all competitive rules in online play and sends them during the protocol-5 handshake.
+
+See `V1.6_NOTES.md` for the full feature list and test checklist.
 
 ## What's new in v1.5.0
 
@@ -54,7 +60,7 @@ Online gameplay is intentionally unchanged and remains gameplay protocol **4**, 
 - GitHub Actions can produce a release-signed APK and AAB when Android signing secrets are configured
 - without signing secrets CI publishes an explicitly named `-debug.apk` fallback rather than disguising a debug build as a release artifact
 
-v1.5.0 still does **not** include TURN/relay gameplay. Symmetric NAT, restrictive CGNAT, enterprise firewalls, or networks that block peer-to-peer UDP can still prevent a direct connection.
+v1.6.0 still does **not** include TURN/relay gameplay. Symmetric NAT, restrictive CGNAT, enterprise firewalls, or networks that block peer-to-peer UDP can still prevent a direct connection.
 
 ## Connection modes
 
@@ -287,16 +293,16 @@ The Linux archive contains the portable `pong` binary plus `pong.png`, `pong.des
 Expected client archives:
 
 ```text
-pong-v1.5.0-windows-x64.zip
-pong-v1.5.0-linux-x64.tar.gz
-pong-v1.5.0-macos-arm64.zip
-pong-android-arm64-v1.5.0.apk
+pong-v1.6.0-windows-x64.zip
+pong-v1.6.0-linux-x64.tar.gz
+pong-v1.6.0-macos-arm64.zip
+pong-android-arm64-v1.6.0.apk
 ```
 
 GitHub Actions also builds the standalone HTTP rendezvous binary archive:
 
 ```text
-pong-rendezvous-v1.5.0-linux-x64.tar.gz
+pong-rendezvous-v1.6.0-linux-x64.tar.gz
 ```
 
 The standalone binary and the `server/` source are the same service. The binary is useful if you want to run the rendezvous API somewhere other than Render.
@@ -326,7 +332,7 @@ C:\Games\Pong\pong.exe
 does not automatically apply to:
 
 ```text
-C:\Users\you\Downloads\pong-v1.5.0-windows-x64\pong.exe
+C:\Users\you\Downloads\pong-v1.6.0-windows-x64\pong.exe
 ```
 
 If Windows prompts for network access, allow Pong on the networks where you intend to play. Moving `pong.exe` later can cause Windows to require permission again for the new path.
@@ -346,7 +352,7 @@ There is no `3478/udp` rule to open on the HTTP rendezvous server. Cloudflare ow
 
 ## Release caveats
 
-- room-code connectivity is direct-only in v1.5.0; there is no TURN/relay fallback yet
+- room-code connectivity is direct-only in v1.6.0; there is no TURN/relay fallback yet
 - rendezvous traffic is protected by HTTPS when you configure an `https://` URL; local `http://` is supported for development
 - room codes and peer tokens are short-lived and stored only in memory
 - the macOS `.app` is unsigned and unnotarized
@@ -363,7 +369,7 @@ See `THIRD_PARTY_NOTICES.md` for dependency notices.
 
 ## Android (v1.5)
 
-v1.5 continues the **ARM64 Android client** while keeping gameplay protocol 4, discovery
+v1.6 continues the **ARM64 Android client** with gameplay protocol 5, discovery
 protocol 1, rendezvous protocol 1, Cloudflare STUN, and the Render room service
 compatible with v1.3/v1.4/v1.5 desktop clients.
 

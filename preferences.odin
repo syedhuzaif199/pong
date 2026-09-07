@@ -89,7 +89,11 @@ config_values_equal :: proc(a, b: App_Settings, rules_a, rules_b: Game_Rules) ->
            config_text_equal(a.rendezvous_url, b.rendezvous_url) &&
            rules_a.winning_score == rules_b.winning_score &&
            rules_a.ball_speed == rules_b.ball_speed &&
-           rules_a.paddle_speed == rules_b.paddle_speed
+           rules_a.paddle_speed == rules_b.paddle_speed &&
+           rules_a.best_of == rules_b.best_of &&
+           rules_a.win_by_two == rules_b.win_by_two &&
+           rules_a.paddle_spin == rules_b.paddle_spin &&
+           rules_a.ball_acceleration == rules_b.ball_acceleration
 }
 
 default_app_settings :: proc() -> App_Settings {
@@ -201,6 +205,20 @@ parse_config_text :: proc(data: string, settings: ^App_Settings, last_rules: ^Ga
             if parse_ok && parsed >= 250 && parsed <= 900 {
                 last_rules.paddle_speed = parsed
             }
+        case "last_best_of":
+            parsed, parse_ok := strconv.parse_int(value)
+            if parse_ok {
+                last_rules.best_of = normalize_best_of(parsed)
+            }
+        case "last_win_by_two":
+            parsed, parse_ok := strconv.parse_int(value)
+            if parse_ok { last_rules.win_by_two = parsed != 0 }
+        case "last_paddle_spin":
+            parsed, parse_ok := strconv.parse_int(value)
+            if parse_ok { last_rules.paddle_spin = parsed != 0 }
+        case "last_ball_acceleration":
+            parsed, parse_ok := strconv.parse_int(value)
+            if parse_ok { last_rules.ball_acceleration = parsed != 0 }
         }
     }
 }
@@ -233,6 +251,12 @@ save_config :: proc(settings: App_Settings, last_rules: Game_Rules) -> bool {
     sfx_muted: int = 0
     fullscreen: int = 0
     stats: int = 0
+    win_by_two: int = 0
+    paddle_spin: int = 0
+    ball_acceleration: int = 0
+    if last_rules.win_by_two { win_by_two = 1 }
+    if last_rules.paddle_spin { paddle_spin = 1 }
+    if last_rules.ball_acceleration { ball_acceleration = 1 }
     if settings.music_muted { muted = 1 }
     if settings.sfx_muted { sfx_muted = 1 }
     if settings.fullscreen { fullscreen = 1 }
@@ -250,10 +274,10 @@ save_config :: proc(settings: App_Settings, last_rules: Game_Rules) -> bool {
     rendezvous_url := text_field_string(&rendezvous_url_field)
     if !internet_valid_rendezvous_url(rendezvous_url) { rendezvous_url = RENDEZVOUS_DEFAULT_URL }
 
-    buf: [1480]u8
+    buf: [1800]u8
     text := fmt.bprintf(
         buf[:],
-        "player_name=%s\nmusic_volume=%d\nmusic_muted=%d\nsfx_volume=%d\nsfx_muted=%d\nfullscreen=%d\nshow_net_stats=%d\ncpu_difficulty=%d\nlast_join_address=%s\nlast_join_port=%d\nrendezvous_url=%s\nlast_winning_score=%d\nlast_ball_speed=%.0f\nlast_paddle_speed=%.0f\n",
+        "player_name=%s\nmusic_volume=%d\nmusic_muted=%d\nsfx_volume=%d\nsfx_muted=%d\nfullscreen=%d\nshow_net_stats=%d\ncpu_difficulty=%d\nlast_join_address=%s\nlast_join_port=%d\nrendezvous_url=%s\nlast_winning_score=%d\nlast_ball_speed=%.0f\nlast_paddle_speed=%.0f\nlast_best_of=%d\nlast_win_by_two=%d\nlast_paddle_spin=%d\nlast_ball_acceleration=%d\n",
         name,
         settings.music_volume,
         muted,
@@ -268,6 +292,10 @@ save_config :: proc(settings: App_Settings, last_rules: Game_Rules) -> bool {
         last_rules.winning_score,
         last_rules.ball_speed,
         last_rules.paddle_speed,
+        normalize_best_of(last_rules.best_of),
+        win_by_two,
+        paddle_spin,
+        ball_acceleration,
     )
     when PONG_ANDROID {
         return platform_config_save(text)

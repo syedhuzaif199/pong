@@ -1,46 +1,41 @@
-# UDP Pong v1.5.0 — release checklist
+# UDP Pong v1.6.0 — release checklist
 
-Application version **v1.5.0** keeps gameplay protocol **4**, discovery protocol **1**, and rendezvous protocol **1**. v1.5 local modes do not change network packet formats.
+Application version **v1.6.0** uses gameplay protocol **5**, discovery protocol **1**, and rendezvous protocol **1**.
 
-## Smoke tests
+## Competitive-play smoke test
 
-- Desktop `VS CPU`: Easy / Normal / Hard each complete a full match and rematch.
-- Desktop `LOCAL 2P`: W/S moves P1; arrows move P2; two controllers work when available.
-- Android `VS CPU`: touch/hold/swipe controls P1 and MENU/Back pauses correctly.
-- Android `LOCAL 2P`: two simultaneous touches on opposite halves move both paddles.
-- Local pause freezes ball/paddles; resume continues normally.
-- Local game-over rematch starts a fresh 3-2-1 countdown.
-- Online host/join, room codes, LAN discovery, ready/countdown/rematch still work exactly as in v1.4.
-- Settings persist across restart.
-- Desktop icons and Android launcher icon remain present.
+- VS CPU: BO3, win-by-two ON, spin ON, acceleration ON.
+- Local 2P: complete at least two games in one match and verify the game counter advances.
+- Verify a deuce-style game continues until one player leads by two.
+- Verify moving a paddle during contact changes the outgoing vertical ball velocity when spin is ON.
+- Verify disabling spin removes that paddle-velocity contribution.
+- Verify disabling acceleration stops the horizontal 3.5% per-hit acceleration.
+- Verify the final summary reports games, total points, per-game scores, longest rally, fastest ball, and time.
+- Online: host rules appear identically in the client lobby.
+- Online: v1.5/protocol-4 peer is rejected as incompatible instead of joining with mismatched rules.
+- Online: complete a multi-game match and rematch on two networks.
 
 ## Release artifacts
 
-Expected desktop/server artifacts:
+Expected desktop/server artifacts follow `VERSION`:
 
-```text
-pong-v1.5.0-windows-x64.zip
-pong-v1.5.0-linux-x64.tar.gz
-pong-v1.5.0-macos-arm64.zip
-pong-rendezvous-v1.5.0-linux-x64.tar.gz
-```
+- `pong-v1.6.0-windows-x64.zip`
+- `pong-v1.6.0-linux-x64.tar.gz`
+- `pong-v1.6.0-macos-arm64.zip`
+- `pong-rendezvous-v1.6.0-linux-x64.tar.gz`
 
-Android with signing secrets:
+Android release signing produces:
 
-```text
-pong-android-arm64-v1.5.0.apk
-pong-android-arm64-v1.5.0.aab
-```
+- `pong-android-arm64-v1.6.0.apk`
+- `pong-android-arm64-v1.6.0.aab`
 
-Without signing secrets:
+Without signing secrets CI explicitly falls back to:
 
-```text
-pong-android-arm64-v1.5.0-debug.apk
-```
+- `pong-android-arm64-v1.6.0-debug.apk`
 
 ## Tag
 
 ```bash
-git tag -a v1.5.0 -m "Pong v1.5.0"
-git push origin v1.5.0
+git tag -a v1.6.0 -m "Pong v1.6.0"
+git push origin v1.6.0
 ```
