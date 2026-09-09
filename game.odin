@@ -20,6 +20,7 @@ P2_X :: FIELD_W - PADDLE_MARGIN - PADDLE_W
 // These rules belong to a match, not to the application's Settings menu.
 // The host chooses them before each game and sends them to the client.
 Game_Rules :: struct {
+    doubles: bool,
     winning_score:    int,
     ball_speed:       f32,
     paddle_speed:     f32,
@@ -30,6 +31,15 @@ Game_Rules :: struct {
 }
 
 Game_State :: struct {
+    power_window: [4]f32,
+    power_cooldown: [4]f32,
+    shot_flash: f32,
+    last_hit_slot: int,
+    last_hit_spin: f32,
+    ball_power: bool,
+
+    doubles: bool,
+    p3_y, p4_y: f32,
     p1_y: f32,
     p2_y: f32,
 
@@ -84,8 +94,9 @@ reset_match :: proc(g: ^Game_State) {
     reset_round(g)
 }
 
-begin_match_countdown :: proc(g: ^Game_State) {
+begin_match_countdown :: proc(g: ^Game_State, doubles := false) {
     reset_match(g)
+    configure_doubles(g, doubles)
     g.countdown_timer = 3.0
     g.go_timer = 0
     g.serve_timer = 0
@@ -94,6 +105,8 @@ begin_match_countdown :: proc(g: ^Game_State) {
 }
 
 reset_round :: proc(g: ^Game_State) {
+    g.power_window = {}
+    g.ball_power = false
     g.ball_x = FIELD_W * 0.5
     g.ball_y = FIELD_H * 0.5
     g.ball_vx = 0
@@ -119,12 +132,17 @@ move_paddle :: proc(y: ^f32, direction, speed, dt: f32) {
     y^ = math.clamp(y^, 0, FIELD_H - PADDLE_H)
 }
 
-step_host_game :: proc(g: ^Game_State, rules: Game_Rules, p1_input, p2_input, dt: f32) {
+step_host_game :: proc(g: ^Game_State, rules: Game_Rules, p1_input, p2_input, dt: f32, p3_input: f32 = 0, p4_input: f32 = 0) {
+    if g.doubles != rules.doubles { configure_doubles(g, rules.doubles) }
     if g.game_over {
         return
     }
 
     g.match_elapsed += dt
+    g.shot_flash = max(f32(0), g.shot_flash - dt)
+    for slot in 0..<4 { g.power_cooldown[slot] = max(f32(0), g.power_cooldown[slot] - dt) }
+    // Expire after collision processing so a press gets its full timing window.
+    defer for slot in 0..<4 { g.power_window[slot] = max(f32(0), g.power_window[slot] - dt) }
 
     if g.between_games_timer > 0 {
         g.between_games_timer -= dt
@@ -134,6 +152,9 @@ step_host_game :: proc(g: ^Game_State, rules: Game_Rules, p1_input, p2_input, dt
             g.score2 = 0
             g.p1_y = (FIELD_H - PADDLE_H) * 0.5
             g.p2_y = (FIELD_H - PADDLE_H) * 0.5
+            configure_doubles(g, rules.doubles)
+            g.power_window = {}
+            g.ball_power = false
             g.ball_x = FIELD_W * 0.5
             g.ball_y = FIELD_H * 0.5
             g.ball_vx = 0
@@ -167,16 +188,14 @@ step_host_game :: proc(g: ^Game_State, rules: Game_Rules, p1_input, p2_input, dt
         if g.go_timer < 0 { g.go_timer = 0 }
     }
 
-    p1_before := g.p1_y
-    p2_before := g.p2_y
-    move_paddle(&g.p1_y, p1_input, rules.paddle_speed, dt)
-    move_paddle(&g.p2_y, p2_input, rules.paddle_speed, dt)
-
-    p1_velocity: f32 = 0
-    p2_velocity: f32 = 0
-    if dt > 0 {
-        p1_velocity = (g.p1_y - p1_before) / dt
-        p2_velocity = (g.p2_y - p2_before) / dt
+    inputs := [4]f32{p1_input, p3_input, p2_input, p4_input}
+    velocities: [4]f32
+    for slot in 0..<4 {
+        if !rules.doubles && (slot == 1 || slot == 3) { continue }
+        y := paddle_position(g, slot)
+        before := y^
+        move_player_paddle(g, slot, inputs[slot], rules.paddle_speed, dt)
+        if dt > 0 { velocities[slot] = (y^ - before) / dt }
     }
 
     if g.serve_timer > 0 {
@@ -188,6 +207,7 @@ step_host_game :: proc(g: ^Game_State, rules: Game_Rules, p1_input, p2_input, dt
         return
     }
 
+    previous_x := g.ball_x
     g.ball_x += g.ball_vx * dt
     g.ball_y += g.ball_vy * dt
 
@@ -203,26 +223,26 @@ step_host_game :: proc(g: ^Game_State, rules: Game_Rules, p1_input, p2_input, dt
         }
     }
 
-    // Left paddle.
-    if g.ball_vx < 0 &&
-       g.ball_x - BALL_RADIUS <= P1_X + PADDLE_W &&
-       g.ball_x + BALL_RADIUS >= P1_X &&
-       g.ball_y + BALL_RADIUS >= g.p1_y &&
-       g.ball_y - BALL_RADIUS <= g.p1_y + PADDLE_H {
-        g.ball_x = P1_X + PADDLE_W + BALL_RADIUS
-        bounce_from_paddle(g, g.p1_y, p1_velocity, true, rules)
-        record_rally_hit(g)
-    }
-
-    // Right paddle.
-    if g.ball_vx > 0 &&
-       g.ball_x + BALL_RADIUS >= P2_X &&
-       g.ball_x - BALL_RADIUS <= P2_X + PADDLE_W &&
-       g.ball_y + BALL_RADIUS >= g.p2_y &&
-       g.ball_y - BALL_RADIUS <= g.p2_y + PADDLE_H {
-        g.ball_x = P2_X - BALL_RADIUS
-        bounce_from_paddle(g, g.p2_y, p2_velocity, false, rules)
-        record_rally_hit(g)
+    for slot in 0..<4 {
+        if !rules.doubles && (slot == 1 || slot == 3) { continue }
+        left := slot < 2
+        x := P2_X
+        if left { x = P1_X }
+        y := paddle_position(g, slot)^
+        crossing := (!left && g.ball_vx > 0 && previous_x - BALL_RADIUS <= x + PADDLE_W && g.ball_x + BALL_RADIUS >= x) ||
+                    (left && g.ball_vx < 0 && previous_x + BALL_RADIUS >= x && g.ball_x - BALL_RADIUS <= x + PADDLE_W)
+        if crossing && g.ball_y + BALL_RADIUS >= y && g.ball_y - BALL_RADIUS <= y + PADDLE_H {
+            if left { g.ball_x = x + PADDLE_W + BALL_RADIUS } else { g.ball_x = x - BALL_RADIUS }
+            powered := g.power_window[slot] > 0
+            bounce_from_paddle(g, y, velocities[slot], left, rules, powered)
+            g.power_window[slot] = 0
+            g.last_hit_slot = slot
+            g.last_hit_spin = 0
+            if rules.paddle_spin { g.last_hit_spin = velocities[slot] / max(f32(1), rules.paddle_speed) }
+            g.shot_flash = 0.45
+            record_rally_hit(g)
+            break
+        }
     }
 
     update_fastest_ball(g)
@@ -254,37 +274,34 @@ update_fastest_ball :: proc(g: ^Game_State) {
     }
 }
 
-bounce_from_paddle :: proc(g: ^Game_State, paddle_y, paddle_velocity: f32, go_right: bool, rules: Game_Rules) {
-    centre := paddle_y + PADDLE_H * 0.5
-    impact := (g.ball_y - centre) / (PADDLE_H * 0.5)
-    impact = math.clamp(impact, -1, 1)
+bounce_from_paddle :: proc(g: ^Game_State, paddle_y, paddle_velocity: f32, go_right: bool, rules: Game_Rules, powered := false) {
+    impact := math.clamp((g.ball_y - paddle_y - PADDLE_H/2) / (PADDLE_H/2), f32(-1), f32(1))
+    speed := math.sqrt(g.ball_vx*g.ball_vx + g.ball_vy*g.ball_vy)
+    if g.ball_power { speed /= POWER_SPEED_MULTIPLIER }
+    if rules.ball_acceleration { speed = min(max(speed, rules.ball_speed) * 1.035, rules.ball_speed * 1.75) } else { speed = rules.ball_speed }
+    // Contact position deliberately selects the return angle: centre is flat,
+    // edges are steep. Moving through contact adds bounded, directional spin.
+    angle := impact * 55
+    if rules.paddle_spin { angle += math.clamp(paddle_velocity / max(f32(1), rules.paddle_speed), f32(-1), f32(1)) * 18 }
+    angle = math.clamp(angle, f32(-70), f32(70)) * math.PI / 180
+    if powered { speed = min(speed * POWER_SPEED_MULTIPLIER, rules.ball_speed * 2.1) }
+    g.ball_power = powered
+    g.ball_vx = math.cos(angle) * speed
+    if !go_right { g.ball_vx = -g.ball_vx }
+    g.ball_vy = math.sin(angle) * speed
+}
 
-    horizontal_speed := g.ball_vx
-    if horizontal_speed < 0 {
-        horizontal_speed = -horizontal_speed
-    }
+POWER_WINDOW :: f32(0.18)
+POWER_COOLDOWN :: f32(3)
+POWER_SPEED_MULTIPLIER :: f32(1.32)
 
-    if rules.ball_acceleration {
-        horizontal_speed *= 1.035
-        horizontal_speed = min(horizontal_speed, rules.ball_speed * 1.75)
-    } else {
-        horizontal_speed = max(horizontal_speed, rules.ball_speed * 0.91)
-    }
-
-    if go_right {
-        g.ball_vx = horizontal_speed
-    } else {
-        g.ball_vx = -horizontal_speed
-    }
-
-    g.ball_vy += impact * 185
-    if rules.paddle_spin {
-        // Spin comes from actual paddle velocity, not raw input. Holding against
-        // a wall therefore cannot manufacture spin, and all input devices obey
-        // the same paddle-speed limit.
-        g.ball_vy += paddle_velocity * 0.30
-    }
-    g.ball_vy = math.clamp(g.ball_vy, -rules.ball_speed * 1.45, rules.ball_speed * 1.45)
+arm_power_return :: proc(g: ^Game_State, slot: int) -> bool {
+    if slot < 0 || slot > 3 || (!g.doubles && (slot == 1 || slot == 3)) { return false }
+    if g.game_over || g.countdown_timer > 0 || g.serve_timer > 0 || g.between_games_timer > 0 || g.power_cooldown[slot] > 0 { return false }
+    g.power_window[slot] = POWER_WINDOW
+    // Every attempt spends the cooldown; holding/spamming cannot guarantee a power hit.
+    g.power_cooldown[slot] = POWER_COOLDOWN
+    return true
 }
 
 game_score_is_winning :: proc(score, other_score: int, rules: Game_Rules) -> bool {
@@ -339,7 +356,14 @@ lerp_f32 :: proc(a, b, t: f32) -> f32 {
     return a + (b - a) * t
 }
 
-interpolate_render_state :: proc(render: ^Game_State, target: Game_State, dt, prediction_seconds, jitter_ms: f32) {
+interpolate_render_state :: proc(render: ^Game_State, target: Game_State, dt, prediction_seconds, jitter_ms: f32, local_slot: int = 2) {
+    render.doubles = target.doubles
+    render.power_window = target.power_window
+    render.power_cooldown = target.power_cooldown
+    render.shot_flash = target.shot_flash
+    render.last_hit_slot = target.last_hit_slot
+    render.last_hit_spin = target.last_hit_spin
+    render.ball_power = target.ball_power
     // Scores and terminal state should never visually lag behind a snapshot.
     render.score1 = target.score1
     render.score2 = target.score2
@@ -398,16 +422,47 @@ interpolate_render_state :: proc(render: ^Game_State, target: Game_State, dt, pr
     }
 
     world_t := math.clamp(dt * world_speed, f32(0), f32(1))
-    render.p1_y = lerp_f32(render.p1_y, target.p1_y, world_t)
     render.ball_x = lerp_f32(render.ball_x, predicted_ball_x, world_t)
     render.ball_y = lerp_f32(render.ball_y, predicted_ball_y, world_t)
-
-    // The client predicts its own (right) paddle locally. Correct it gently so
-    // normal RTT does not turn into visible snapping.
-    local_error := target.p2_y - render.p2_y
-    local_t := math.clamp(dt * 7.0, f32(0), f32(1))
-    if math.abs(local_error) > 90 {
-        local_t = math.clamp(dt * 20.0, f32(0), f32(1))
+    target_copy := target
+    for slot in 0..<4 {
+        y := paddle_position(render, slot)
+        desired := paddle_position(&target_copy, slot)^
+        correction := world_t
+        if slot == local_slot {
+            correction = math.clamp(dt * 7, f32(0), f32(1))
+            if math.abs(desired - y^) > 90 { correction = math.clamp(dt * 20, f32(0), f32(1)) }
+        }
+        y^ = lerp_f32(y^, desired, correction)
     }
-    render.p2_y = lerp_f32(render.p2_y, target.p2_y, local_t)
+}
+
+// Slots 0/1 are cyan upper/lower; slots 2/3 are coral upper/lower.
+paddle_position :: proc(g: ^Game_State, slot: int) -> ^f32 {
+    switch slot {
+    case 0: return &g.p1_y
+    case 1: return &g.p3_y
+    case 3: return &g.p4_y
+    }
+    return &g.p2_y
+}
+
+configure_doubles :: proc(g: ^Game_State, enabled: bool) {
+    g.doubles = enabled
+    if enabled {
+        g.p1_y = (FIELD_H / 2 - PADDLE_H) / 2
+        g.p2_y = g.p1_y
+        g.p3_y = g.p1_y + FIELD_H / 2
+        g.p4_y = g.p3_y
+    }
+}
+
+move_player_paddle :: proc(g: ^Game_State, slot: int, direction, speed, dt: f32) {
+    y := paddle_position(g, slot)
+    move_paddle(y, direction, speed, dt)
+    if g.doubles {
+        low: f32 = 0
+        if slot % 2 == 1 { low = FIELD_H / 2 }
+        y^ = math.clamp(y^, low, low + FIELD_H / 2 - PADDLE_H)
+    }
 }

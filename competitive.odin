@@ -268,6 +268,15 @@ draw_match_complete_overlay :: proc(app: ^App, g: ^Game_State, player1_name, pla
         if app.net.local_rematch { local_colour = GOOD }
         if app.net.remote_rematch { opponent_colour = GOOD }
         draw_text_centered(local_status, 320, 16, local_colour)
+        if g.doubles {
+            everyone_else := app.net.remote_rematch
+            if app.net.squad != nil {
+                everyone_else = everyone_else && app.team_peers[0].remote_rematch && app.team_peers[1].remote_rematch
+            }
+            opponent_status = "WAITING FOR OTHER PLAYERS"
+            opponent_colour = MUTED
+            if everyone_else { opponent_status = "ALL OTHER PLAYERS READY"; opponent_colour = GOOD }
+        }
         draw_text_centered(opponent_status, 342, 16, opponent_colour)
 
         rematch_label := "REMATCH"
@@ -279,10 +288,11 @@ draw_match_complete_overlay :: proc(app: ^App, g: ^Game_State, player1_name, pla
         when !PONG_ANDROID {
             draw_text_centered("ENTER / controller A also requests a rematch", 432, 14, MUTED)
         }
-        draw_text_centered("The next match starts when both players accept.", 454, 14, MUTED)
+        draw_text_centered("The next match starts when every player accepts.", 454, 14, MUTED)
     } else {
         mode_text := "LOCAL 2P"
         if app.match_mode == .Vs_CPU { mode_text = "VS CPU" }
+        if app.match_mode == .Local_Doubles { mode_text = "2 V 2 CO-OP" }
         draw_text_centered(mode_text, 304, 15, ACCENT)
         if button("REMATCH", rl.Rectangle{330, 346, 300, 50}, !app.paused) {
             start_local_rematch(app)

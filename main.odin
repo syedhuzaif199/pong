@@ -6,7 +6,7 @@ import "core:os"
 import "core:strconv"
 import rl "vendor:raylib"
 
-APP_VERSION :: "v1.6.0"
+APP_VERSION :: "v1.7.0"
 PRE_COUNTDOWN_FADE_TIME :: f32(0.40)
 LAN_IPV4_FALLBACK_DELAY :: f64(0.75)
 
@@ -43,6 +43,11 @@ App :: struct {
     selected_local_mode: Match_Mode,
     cpu_difficulty: CPU_Difficulty,
     cpu_ai: CPU_AI,
+    cpu_ai2: CPU_AI,
+    online_doubles: bool,
+    doubles_address: Text_Field,
+    team_peers: [2]Net_State,
+    team_internet: [2]Internet_State,
 
     address: Text_Field,
     port: Text_Field,
@@ -157,6 +162,7 @@ run_game :: proc() {
         app.cpu_difficulty = .Normal
     }
     reset_cpu_ai(&app.cpu_ai)
+    reset_cpu_ai(&app.cpu_ai2)
     app.saved_preferences = app.preferences
     app.saved_game_rules = app.last_game_rules
     app.network_rules = app.last_game_rules
@@ -241,6 +247,7 @@ run_game :: proc() {
     discovery_host_shutdown(&app.discovery_host)
     discovery_client_shutdown(&app.discovery_client)
     internet_cancel(&app.internet, &app.net)
+    for i in 0..<2 { internet_cancel(&app.team_internet[i], &app.team_peers[i]) }
     rl.UnloadRenderTexture(canvas)
 
     if audio_ready {
@@ -328,6 +335,7 @@ update_music_mode :: proc(app: ^App) {
 }
 
 update_app :: proc(app: ^App, dt: f32) {
+    update_doubles_links(app)
     app.transition_alpha = max(f32(0), app.transition_alpha - dt * 4.5)
     if app.reconnect_notice_timer > 0 {
         app.reconnect_notice_timer = max(f32(0), app.reconnect_notice_timer - dt)
@@ -536,6 +544,7 @@ start_internet_hosting :: proc(app: ^App) {
 
     sanitize_player_name(&app.preferences.player_name)
     app.network_rules = app.last_game_rules
+    app.network_rules.doubles = app.online_doubles
     reset_match(&app.game)
     app.render_game = app.game
     app.target_game = app.game
@@ -552,6 +561,7 @@ start_internet_hosting :: proc(app: ^App) {
         return
     }
 
+    if !start_doubles_links(app, true) { return }
     app.online_status = .Hosting
     app.connection_origin = .Internet_Host
     app.status_message = ""
@@ -760,7 +770,7 @@ update_lobby :: proc(app: ^App, dt: f32) {
                 cancel_match_start_fade(app)
                 clear_ready_state(&app.net)
                 clear_rematch_state(&app.net)
-                begin_match_countdown(&app.game)
+                begin_match_countdown(&app.game, app.network_rules.doubles)
                 reset_match_rtt_stats(app)
                 app.render_game = app.game
                 app.target_game = app.game
@@ -829,13 +839,15 @@ start_local_match :: proc(app: ^App) {
     net_shutdown(&app.net, false)
     app.match_mode = app.selected_local_mode
     app.network_rules = app.last_game_rules
+    app.network_rules.doubles = app.match_mode == .Local_Doubles
     save_app_config(app)
 
-    begin_match_countdown(&app.game)
+    begin_match_countdown(&app.game, app.network_rules.doubles)
     reset_match_rtt_stats(app)
     app.render_game = app.game
     app.target_game = app.game
     reset_cpu_ai(&app.cpu_ai)
+    reset_cpu_ai(&app.cpu_ai2)
     app.paused = false
     app.pause_settings = false
     app.countdown_sound_stage = 0
@@ -845,11 +857,12 @@ start_local_match :: proc(app: ^App) {
 
 start_local_rematch :: proc(app: ^App) {
     cancel_match_start_fade(app)
-    begin_match_countdown(&app.game)
+    begin_match_countdown(&app.game, app.network_rules.doubles)
     reset_match_rtt_stats(app)
     app.render_game = app.game
     app.target_game = app.game
     reset_cpu_ai(&app.cpu_ai)
+    reset_cpu_ai(&app.cpu_ai2)
     app.paused = false
     app.pause_settings = false
     app.countdown_sound_stage = 0
@@ -873,10 +886,18 @@ update_local_game :: proc(app: ^App, dt: f32) {
 
     p1_input: f32 = 0
     p2_input: f32 = 0
+    p3_input, p4_input: f32
 
     if app.match_mode == .Vs_CPU {
         p1_input = input_paddle_direction(&app.input)
         p2_input = cpu_paddle_direction(&app.cpu_ai, &app.game, app.cpu_difficulty, dt)
+    } else if app.match_mode == .Local_Doubles {
+        when PONG_ANDROID { p1_input, p3_input = input_android_local_2p() } else {
+            p1_input = input_local_p1_direction()
+            p3_input = input_local_p2_direction()
+        }
+        p2_input = cpu_doubles_direction(&app.cpu_ai, &app.game, app.cpu_difficulty, dt, 2)
+        p4_input = cpu_doubles_direction(&app.cpu_ai2, &app.game, app.cpu_difficulty, dt, 3)
     } else if app.match_mode == .Local_2P {
         when PONG_ANDROID {
             p1_input, p2_input = input_android_local_2p()
@@ -887,7 +908,7 @@ update_local_game :: proc(app: ^App, dt: f32) {
     }
 
     before := app.game
-    step_host_game(&app.game, app.network_rules, p1_input, p2_input, dt)
+    step_host_game(&app.game, app.network_rules, p1_input, p2_input, dt, p3_input, p4_input)
     process_game_events(app, before, app.game)
     app.render_game = app.game
 }
@@ -969,7 +990,7 @@ update_game :: proc(app: ^App, dt: f32) {
                     cancel_match_start_fade(app)
                     clear_rematch_state(&app.net)
                     send_rematch_state(&app.net)
-                    begin_match_countdown(&app.game)
+                    begin_match_countdown(&app.game, app.network_rules.doubles)
                     reset_match_rtt_stats(app)
                     begin_mobile_control_hint(app)
                     app.render_game = app.game
@@ -984,7 +1005,11 @@ update_game :: proc(app: ^App, dt: f32) {
         } else {
             cancel_match_start_fade(app)
             if !interrupted {
-                step_host_game(&app.game, app.network_rules, direction, app.net.remote_input, dt)
+                if app.network_rules.doubles {
+                    step_host_game(&app.game, app.network_rules, direction, app.team_peers[0].remote_input, dt, app.net.remote_input, app.team_peers[1].remote_input)
+                } else {
+                    step_host_game(&app.game, app.network_rules, direction, app.net.remote_input, dt)
+                }
             }
             // Keep sending the last authoritative state during the grace window.
             // If only the peer->host path was interrupted, this helps the peer
@@ -1039,12 +1064,12 @@ update_game :: proc(app: ^App, dt: f32) {
         net_send_ping_if_due(&app.net)
 
         if !interrupted {
-            interpolate_render_state(&app.render_game, app.target_game, dt, client_prediction_horizon(&app.net), max(app.net.rtt_jitter_ms, app.net.state_jitter_ms))
+            interpolate_render_state(&app.render_game, app.target_game, dt, client_prediction_horizon(&app.net), max(app.net.rtt_jitter_ms, app.net.state_jitter_ms), app.net.assigned_slot)
         }
 
         if !interrupted && !app.paused && app.render_game.countdown_timer <= 0 &&
            app.render_game.between_games_timer <= 0 && !app.render_game.game_over {
-            move_paddle(&app.render_game.p2_y, direction, app.network_rules.paddle_speed, dt)
+            move_player_paddle(&app.render_game, app.net.assigned_slot, direction, app.network_rules.paddle_speed, dt)
         }
 
         if app.render_game.game_over {
@@ -1105,7 +1130,7 @@ draw_mobile_control_affordance :: proc(app: ^App) {
         if app.paused || app.render_game.game_over { return }
         colour := rl.Color{143, 153, 170, 72}
 
-        if app.match_mode == .Local_2P {
+        if app.match_mode == .Local_2P || app.match_mode == .Local_Doubles {
             draw_text("P1 ^", 42, 142, 18, colour)
             draw_text("LEFT HALF", 28, 174, 11, colour)
             draw_text("P1 v", 42, 365, 18, colour)
@@ -1116,7 +1141,7 @@ draw_mobile_control_affordance :: proc(app: ^App) {
         }
 
         x: int = 66
-        if app.match_mode == .Online && app.net.role == .Client { x = WINDOW_W - 82 }
+        if app.match_mode == .Online && local_player_number(app) == 2 { x = WINDOW_W - 82 }
         draw_text("^", x, 142, 24, colour)
         draw_text("TOUCH / SWIPE", x - 36, 174, 11, colour)
         draw_text("v", x, 365, 24, colour)
@@ -1180,13 +1205,18 @@ draw_local_play :: proc(app: ^App) {
     draw_text("CHOOSE YOUR RIVAL", 56, 44, 14, ACCENT)
     draw_text("Keep it local.", 52, 80, 54, FG)
     draw_text("One court. Two sides. All you need is a worthy opponent.", 56, 148, 18, MUTED)
-    if menu_card("VS CPU", "Train your reflexes. Three difficulty levels.", "01", {56, 218, 848, 88}, ACCENT) {
+    if menu_card("VS CPU", "Train your reflexes. Three difficulty levels.", "01", {56, 190, 848, 76}, ACCENT) {
         app.selected_local_mode = .Vs_CPU
         app.screen = .Local_Setup
         return
     }
-    if menu_card("LOCAL 2P", "Challenge a friend on this device.", "02", {56, 326, 848, 88}, CORAL) {
+    if menu_card("LOCAL 2P", "Challenge a friend on this device.", "02", {56, 280, 848, 76}, CORAL) {
         app.selected_local_mode = .Local_2P
+        app.screen = .Local_Setup
+        return
+    }
+    if menu_card("2 V 2 CO-OP", "Two local players versus two AI opponents.", "03", {56, 370, 848, 76}, ACCENT) {
+        app.selected_local_mode = .Local_Doubles
         app.screen = .Local_Setup
         return
     }
@@ -1201,10 +1231,11 @@ draw_local_play :: proc(app: ^App) {
 draw_local_setup :: proc(app: ^App) {
     title := "LOCAL 2P SETUP"
     if app.selected_local_mode == .Vs_CPU { title = "VS CPU SETUP" }
+    if app.selected_local_mode == .Local_Doubles { title = "2 V 2 CO-OP SETUP" }
     draw_text_centered(title, 30, 44, FG)
 
     y: f32 = 108
-    if app.selected_local_mode == .Vs_CPU {
+    if app.selected_local_mode == .Vs_CPU || app.selected_local_mode == .Local_Doubles {
         draw_text("CPU difficulty", 285, int(y) + 10, 21, FG)
         if button("<", rl.Rectangle{560, f32(y), 48, 42}) {
             app.cpu_difficulty = cpu_difficulty_previous(app.cpu_difficulty)
@@ -1216,7 +1247,11 @@ draw_local_setup :: proc(app: ^App) {
             app.cpu_difficulty = cpu_difficulty_next(app.cpu_difficulty)
             app.preferences.cpu_difficulty = int(app.cpu_difficulty)
         }
-        draw_text_centered("Difficulty changes reaction/aim only; CPU paddle speed obeys the same rules.", 158, 13, MUTED)
+        if app.selected_local_mode == .Local_Doubles {
+            when PONG_ANDROID { draw_text_centered("Left touch: upper teammate. Right touch: lower teammate. Both play cyan.", 158, 13, ACCENT) } else {
+                draw_text_centered("P1: W/S (upper cyan)   P2: arrows (lower cyan)   /   controllers 1 + 2", 158, 13, ACCENT)
+            }
+        } else { draw_text_centered("Shape your returns with paddle placement and movement.", 158, 13, MUTED) }
         y = 190
     } else {
         when PONG_ANDROID {
@@ -1246,7 +1281,10 @@ draw_local_setup :: proc(app: ^App) {
 draw_online :: proc(app: ^App) {
     draw_text("FIND YOUR NEXT RIVAL", 56, 44, 14, CORAL)
     draw_text("Go head to head.", 52, 80, 54, FG)
-    draw_text("Share a room code or meet on the same network.", 56, 148, 18, MUTED)
+    draw_text("Share invites or meet on the same network.", 56, 148, 18, MUTED)
+    mode := "HOST: 1 V 1"
+    if app.online_doubles { mode = "HOST: 2 V 2" }
+    if button(mode, {700, 144, 204, 48}) { app.online_doubles = !app.online_doubles }
 
     if menu_card("CREATE ROOM", "Invite a friend with a room code", "01", {56, 216, 414, 88}, ACCENT) {
         app.online_status = .Idle
@@ -1284,9 +1322,12 @@ draw_online :: proc(app: ^App) {
 }
 
 draw_internet_host :: proc(app: ^App) {
+    if app.net.squad != nil { draw_doubles_lobby(app); return }
     active := app.online_status == .Hosting
 
-    draw_text_centered("HOST WITH CODE", 18, 40, FG)
+    title := "HOST WITH CODE"
+    if app.online_doubles { title = "HOST 2 V 2 / THREE INVITES" }
+    draw_text_centered(title, 18, 36, FG)
     draw_text_centered("Cloudflare discovers your UDP mapping; the rendezvous service only exchanges room data.", 62, 14, MUTED)
     if active || app.internet.phase == .Error { draw_internet_phase_badge(&app.internet, 20) }
 
@@ -1448,9 +1489,12 @@ draw_settings :: proc(app: ^App) {
 }
 
 draw_host_setup :: proc(app: ^App) {
+    if app.net.squad != nil { draw_doubles_lobby(app); return }
     controls_disabled := app.online_status == .Hosting
 
-    draw_text_centered("HOST GAME", 28, 42, FG)
+    title := "HOST GAME"
+    if app.online_doubles { title = "HOST 2 V 2 / LAN" }
+    draw_text_centered(title, 28, 42, FG)
     draw_text_centered("Choose this match's rules. They are remembered for your next hosted game.", 76, 16, MUTED)
 
     text_field("Port", &app.port, rl.Rectangle{370, 104, 220, 46}, !controls_disabled, .Number)
@@ -1750,6 +1794,7 @@ join_discovered_game :: proc(app: ^App, game: ^Discovered_Game) {
 }
 
 draw_lobby :: proc(app: ^App) {
+    if app.network_rules.doubles { draw_doubles_lobby(app); return }
     draw_text_centered("LOBBY", 32, 44, FG)
 
     host_name := remote_player_name(&app.net)
@@ -1839,13 +1884,14 @@ start_hosting :: proc(app: ^App) {
     cancel_match_start_fade(app)
     reset_connection_feedback(app)
     port, ok := parse_port_field(app)
-    if !ok {
+    if !ok || (app.online_doubles && port > 65533) {
         app.online_status = .Error
-        app.status_message = "Port must be between 1 and 65535."
+        app.status_message = "Use ports 1-65535; doubles needs a base port no higher than 65533."
         return
     }
 
     app.network_rules = app.last_game_rules
+    app.network_rules.doubles = app.online_doubles
     save_app_config(app)
 
     sanitize_player_name(&app.preferences.player_name)
@@ -1855,8 +1901,10 @@ start_hosting :: proc(app: ^App) {
         return
     }
 
+    if !start_doubles_links(app, false, port) { return }
     reset_match(&app.game)
     _ = discovery_host_start(&app.discovery_host, port, text_field_string(&app.preferences.player_name), app.net.accepts_ipv6)
+    text_field_set(&app.doubles_address, discovery_host_ipv4(&app.discovery_host))
     app.online_status = .Hosting
     app.connection_origin = .Host_Setup
     app.status_message = ""
@@ -1906,6 +1954,7 @@ draw_game_screen :: proc(app: ^App) {
         client_name = fmt.bprintf(cpu_name_buf[:], "CPU / %s", cpu_difficulty_name(app.cpu_difficulty))
     }
 
+    if g.doubles { host_name = "CYAN TEAM"; client_name = "CORAL TEAM" }
     names_buf: [160]u8
     names := fmt.bprintf(names_buf[:], "%s  vs  %s", host_name, client_name)
     draw_text_centered_in(names, {330, 74, 300, 18}, 13, MUTED)
@@ -1924,6 +1973,22 @@ draw_game_screen :: proc(app: ^App) {
     if g.countdown_timer <= 0 && g.serve_timer <= 0 && !g.game_over { draw_ball_trail(g) }
     draw_energy_paddle({P1_X, g.p1_y, PADDLE_W, PADDLE_H}, ACCENT, app.fx.p1_flash)
     draw_energy_paddle({P2_X, g.p2_y, PADDLE_W, PADDLE_H}, CORAL, app.fx.p2_flash)
+    if g.doubles {
+        rl.DrawLine(5, WINDOW_H/2, 110, WINDOW_H/2, ink(ACCENT, 100))
+        rl.DrawLine(WINDOW_W-110, WINDOW_H/2, WINDOW_W-5, WINDOW_H/2, ink(CORAL, 100))
+        draw_energy_paddle({P1_X, g.p3_y, PADDLE_W, PADDLE_H}, ACCENT, app.fx.p1_flash)
+        draw_energy_paddle({P2_X, g.p4_y, PADDLE_W, PADDLE_H}, CORAL, app.fx.p2_flash)
+        draw_text("P1", 62, int(g.p1_y)+43, 14, ACCENT)
+        draw_text("P2", 62, int(g.p3_y)+43, 14, ACCENT)
+        draw_text("P3", 870, int(g.p2_y)+43, 14, CORAL)
+        draw_text("P4", 870, int(g.p4_y)+43, 14, CORAL)
+        if app.match_mode == .Online {
+            slot := app.net.assigned_slot
+            if app.net.role == .Host { slot = 0 }
+            buf: [64]u8
+            draw_text(fmt.bprintf(buf[:], "YOU: P%d", slot+1), 16, 16, 17, FG)
+        }
+    }
     ball_colour := ACCENT
     if g.ball_vx < 0 { ball_colour = CORAL }
     draw_energy_ball({g.ball_x, g.ball_y}, BALL_RADIUS, ball_colour)
@@ -1984,7 +2049,7 @@ draw_game_screen :: proc(app: ^App) {
             hint_bg := rl.Color{5, 6, 9, u8(f32(105) * fade)}
 
             rl.DrawRectangle(190, 120, 580, 42, hint_bg)
-            if app.match_mode == .Local_2P {
+            if app.match_mode == .Local_2P || app.match_mode == .Local_Doubles {
                 draw_text_centered("P1: LEFT HALF     P2: RIGHT HALF     HOLD TOP / BOTTOM", 131, 15, hint_colour)
             } else {
                 draw_text_centered("HOLD TOP / BOTTOM  OR  SWIPE UP / DOWN", 131, 17, hint_colour)
@@ -2004,7 +2069,11 @@ draw_game_screen :: proc(app: ^App) {
 }
 
 local_player_number :: proc(app: ^App) -> int {
-    if app.match_mode == .Vs_CPU { return 1 }
+    if app.match_mode == .Vs_CPU || app.match_mode == .Local_Doubles { return 1 }
+    if app.network_rules.doubles && app.net.role == .Client {
+        if app.net.assigned_slot < 2 { return 1 }
+        return 2
+    }
     if app.net.role == .Host { return 1 }
     return 2
 }
@@ -2178,4 +2247,5 @@ draw_transition_overlay :: proc(app: ^App) {
     alpha := u8(app.transition_alpha * 255.0)
     rl.DrawRectangle(0, 0, WINDOW_W, WINDOW_H, rl.Color{5, 6, 9, alpha})
 }
+
 

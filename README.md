@@ -1,11 +1,31 @@
-# UDP Pong — Odin + raylib (v1.6.0)
+# UDP Pong — Odin + raylib (v1.7.0)
 
 A small Pong game written in Odin with raylib, with solo CPU, local 2-player, and online multiplayer. Gameplay is host-authoritative UDP. Pong supports IPv4 and IPv6, LAN discovery, direct IP play, short-code Internet play, desktop controllers, and Android touch controls.
 
-> **App v1.6.0 · gameplay protocol v5 · discovery protocol v1 · HTTP rendezvous protocol v1**
+> **App v1.7.0 · gameplay protocol v6 · discovery protocol v1 · HTTP rendezvous protocol v1**
 >
-> Application versions and wire-protocol versions are independent. v1.6 bumps gameplay protocol to 5 because competitive match rules and set state are synchronized; protocol-4 peers are intentionally rejected.
+> v1.7 uses gameplay protocol 6 for doubles rules, slot assignment, four-paddle snapshots, and lobby rosters. Everyone in an online match must use this version; older gameplay protocols are rejected.
 
+
+## Doubles (v1.7)
+
+- **Local:** choose **Play Local > 2 V 2 Co-op**. Two humans play cyan against two AI opponents. P1 uses W/S or controller 1 for the upper paddle; P2 uses arrows or controller 2 for the lower paddle. On Android, the left touch half controls P1 and the right touch half controls P2; both paddles remain on cyan's side.
+- **Online:** switch the online menu's host mode to **2 V 2**, then host with codes or LAN. The host is P1, their teammate is P2, and P3/P4 are the opposing team. Every guest uses their own device; all four players are human.
+- **Room codes:** the host creates three separate invites using the existing rendezvous service. Send P2, P3, and P4 their respective codes shown in the lobby. Each guest chooses **Join Room** and enters their code. No server deployment is required.
+- **LAN/direct:** three consecutive UDP ports are used (base, base + 1, base + 2). The lobby shows the host IP and each guest's port. LAN discovery advertises the base/P2 port; P3/P4 enter the host address and their displayed port manually. Choose a base port no higher than 65533.
+- Each teammate covers the upper or lower half of the side. Points and games belong to the team; all existing competitive rules apply. All four must ready up and all four must accept a rematch. A disconnected guest pauses the host simulation during the reconnect grace period; a departure or timeout ends the session for everyone.
+
+Windows validation:
+
+```powershell
+odin test . -define:RAYLIB_SHARED=true -define:ODIN_TEST_THREADS=1 -out:pong-tests.exe
+```
+
+Tests exercise four-paddle collisions and lane limits, shared scoring, three actual loopback UDP guest connections, slot assignment, snapshot distribution, session/sequence isolation, readiness and rematch gates, disconnect fan-out, and singles compatibility. The visual review also renders the doubles arena, setup and four-slot lobby. Cross-network STUN/NAT traversal and Android device play still need manual verification.
+
+### CPU behavior in v1.7
+
+The angle-rounding and delayed-observation experiments have been reverted. The CPU again predicts the landing point from the ball's current velocity, including wall reflections, without artificial aim error. Movement limits and additional player skills are pending design; the difficulty labels currently share this accurate predictor and the standard paddle movement rules.
 
 ## Arena visual overhaul
 
@@ -26,7 +46,7 @@ odin build . -out:pong-review.exe -define:RAYLIB_SHARED=true -define:PONG_VISUAL
 .\pong-review.exe
 ```
 
-This renders nine `review-*.png` screenshots in a hidden window without starting
+This renders twelve `review-*.png` screenshots in a hidden window without starting
 network connections, playing audio, or reading/writing user preferences. The review
 executable and images are ignored by Git. This is a rendering smoke check; live
 multiplayer and Android device testing are separate checks.

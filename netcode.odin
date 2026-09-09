@@ -7,7 +7,7 @@ import "core:strconv"
 import "core:strings"
 import rl "vendor:raylib"
 
-PROTOCOL_VERSION :: 5
+PROTOCOL_VERSION :: 6
 HELLO_INTERVAL :: 0.50
 STATE_INTERVAL :: 1.0 / 60.0
 INPUT_INTERVAL :: 1.0 / 60.0
@@ -32,6 +32,16 @@ Net_Transport :: enum {
 }
 
 Net_State :: struct {
+    squad: ^[2]Net_State,
+    captain: ^Net_State,
+    assigned_slot: int,
+    doubles: bool,
+    internet_pending: bool,
+    roster_names: [4][32]u8,
+    roster_lengths: [4]int,
+    roster_connected: [4]bool,
+    roster_ready: [4]bool,
+
     role:        Net_Role,
     socket:      net.UDP_Socket,
     socket_open: bool,
@@ -141,8 +151,11 @@ send_bye :: proc(n: ^Net_State) {
 }
 
 net_shutdown :: proc(n: ^Net_State, send_bye_packet := true) {
+    if n.squad != nil {
+        for &peer in n.squad^ { net_shutdown(&peer, true) }
+    }
     if n.socket_open {
-        if send_bye_packet && n.peer_known && n.session_valid { send_bye(n) }
+        if (send_bye_packet || n.squad != nil) && n.peer_known && n.session_valid { send_bye(n) }
         net.close(n.socket)
     }
     n^ = Net_State{}
@@ -288,7 +301,7 @@ send_welcome :: proc(n: ^Net_State, hello_nonce: u32, rules: Game_Rules) {
     buf: [384]u8
     msg := fmt.bprintf(
         buf[:],
-        "WELCOME|%d|%d|%d|%d|%.0f|%.0f|%d|%d|%d|%d|%s",
+        "WELCOME|%d|%d|%d|%d|%.0f|%.0f|%d|%d|%d|%d|%s|%d|%d",
         PROTOCOL_VERSION,
         hello_nonce,
         n.session_id,
@@ -300,19 +313,27 @@ send_welcome :: proc(n: ^Net_State, hello_nonce: u32, rules: Game_Rules) {
         spin,
         accel,
         local_player_name(n),
+        int(rules.doubles),
+        welcome_slot(n, rules),
     )
     _ = net_send_text(n, msg)
 }
 
 send_lobby_state :: proc(n: ^Net_State) {
-    if n.role != .Host || !n.session_valid || !n.peer_known { return }
-    host_ready: int = 0
-    client_ready: int = 0
-    if n.local_ready { host_ready = 1 }
-    if n.remote_ready { client_ready = 1 }
-    buf: [96]u8
-    msg := fmt.bprintf(buf[:], "LOBBY_STATE|%d|%d|%d", n.session_id, host_ready, client_ready)
-    _ = net_send_text(n, msg)
+    root := team_root(n)
+    if root.role != .Host { return }
+    update_team_roster(root)
+    for peer in team_connections(root) {
+        if peer == nil || !peer.connected { continue }
+        others_ready := root.local_ready
+        for other in team_connections(root) {
+            if other != nil && other != peer { others_ready = others_ready && other.connected && other.remote_ready }
+        }
+        buf: [96]u8
+        msg := fmt.bprintf(buf[:], "LOBBY_STATE|%d|%d|%d", peer.session_id, int(others_ready), int(peer.remote_ready))
+        _ = net_send_text(peer, msg)
+        send_team_roster(root, peer)
+    }
 }
 
 net_set_local_ready :: proc(n: ^Net_State, ready: bool) {
@@ -347,23 +368,31 @@ net_send_lobby_if_due :: proc(n: ^Net_State) {
 }
 
 both_players_ready :: proc(n: ^Net_State) -> bool {
-    return n.local_ready && n.remote_ready
+    if n.squad != nil {
+        for &peer in n.squad^ { if !peer.connected || !peer.remote_ready { return false } }
+    }
+    return n.connected && n.local_ready && n.remote_ready
 }
 
 clear_ready_state :: proc(n: ^Net_State) {
+    if n.squad != nil { for &peer in n.squad^ { clear_ready_state(&peer) } }
     n.local_ready = false
     n.remote_ready = false
 }
 
 send_rematch_state :: proc(n: ^Net_State) {
-    if n.role != .Host || !n.session_valid || !n.peer_known { return }
-    host_wants: int = 0
-    client_wants: int = 0
-    if n.local_rematch { host_wants = 1 }
-    if n.remote_rematch { client_wants = 1 }
-    buf: [96]u8
-    msg := fmt.bprintf(buf[:], "REMATCH_STATE|%d|%d|%d", n.session_id, host_wants, client_wants)
-    _ = net_send_text(n, msg)
+    root := team_root(n)
+    if root.role != .Host { return }
+    for peer in team_connections(root) {
+        if peer == nil || !peer.connected { continue }
+        others_want := root.local_rematch
+        for other in team_connections(root) {
+            if other != nil && other != peer { others_want = others_want && other.connected && other.remote_rematch }
+        }
+        buf: [96]u8
+        msg := fmt.bprintf(buf[:], "REMATCH_STATE|%d|%d|%d", peer.session_id, int(others_want), int(peer.remote_rematch))
+        _ = net_send_text(peer, msg)
+    }
 }
 
 net_request_rematch :: proc(n: ^Net_State) {
@@ -396,10 +425,14 @@ net_send_rematch_if_due :: proc(n: ^Net_State) {
 }
 
 both_players_want_rematch :: proc(n: ^Net_State) -> bool {
-    return n.local_rematch && n.remote_rematch
+    if n.squad != nil {
+        for &peer in n.squad^ { if !peer.connected || !peer.remote_rematch { return false } }
+    }
+    return n.connected && n.local_rematch && n.remote_rematch
 }
 
 clear_rematch_state :: proc(n: ^Net_State) {
+    if n.squad != nil { for &peer in n.squad^ { clear_rematch_state(&peer) } }
     n.local_rematch = false
     n.remote_rematch = false
 }
@@ -416,6 +449,7 @@ send_input :: proc(n: ^Net_State, direction: f32) {
 }
 
 send_state :: proc(n: ^Net_State, g: Game_State) {
+    if n.squad != nil { for &peer in n.squad^ { if peer.connected { send_state(&peer, g) } } }
     if !n.session_valid { return }
 
     n.send_seq += 1
@@ -425,7 +459,7 @@ send_state :: proc(n: ^Net_State, g: Game_State) {
     buf: [768]u8
     msg := fmt.bprintf(
         buf[:],
-        "STATE|%d|%d|%.3f|%.3f|%.3f|%.3f|%.3f|%.3f|%d|%d|%d|%d|%.3f|%.0f|%.3f|%.3f|%d|%d|%d|%.3f|%d|%d|%d|%d|%.3f|%.3f",
+        "STATE|%d|%d|%.3f|%.3f|%.3f|%.3f|%.3f|%.3f|%d|%d|%d|%d|%.3f|%.0f|%.3f|%.3f|%d|%d|%d|%.3f|%d|%d|%d|%d|%.3f|%.3f|%.3f|%.3f|%d",
         n.session_id,
         n.send_seq,
         g.ball_x,
@@ -452,6 +486,9 @@ send_state :: proc(n: ^Net_State, g: Game_State) {
         g.longest_rally,
         g.fastest_ball,
         g.match_elapsed,
+        g.p3_y,
+        g.p4_y,
+        int(g.doubles),
     )
     if net_send_text(n, msg) { n.last_stream_send_time = rl.GetTime() }
 }
@@ -502,6 +539,7 @@ record_pong :: proc(n: ^Net_State, nonce: u32) {
 }
 
 net_send_ping_if_due :: proc(n: ^Net_State) {
+    if n.squad != nil { for &peer in n.squad^ { net_send_ping_if_due(&peer) } }
     if !n.connected || !n.peer_known { return }
     now := rl.GetTime()
     if n.ping_outstanding && now - n.ping_sent_time < PING_RETRY_AFTER { return }
@@ -534,6 +572,14 @@ seconds_since_last_recv :: proc(n: ^Net_State) -> f64 {
 }
 
 net_receive_host :: proc(n: ^Net_State, rules: Game_Rules, g: ^Game_State) -> (newly_connected: bool, got_packet: bool) {
+    if n.squad != nil {
+        for &peer in n.squad^ {
+            // Internet sockets belong to the STUN/punch state machine until ready.
+            if !peer.socket_open || (peer.internet_pending) { continue }
+            _, _ = net_receive_host(&peer, rules, g)
+            if peer.peer_left { n.peer_left = true }
+        }
+    }
     if !n.socket_open { return }
 
     for {
@@ -713,8 +759,12 @@ net_receive_client :: proc(n: ^Net_State, rules: ^Game_Rules, target: ^Game_Stat
             spin, spin_ok := next_int(&rest)
             accel, accel_ok := next_int(&rest)
             host_name, name_ok := next_string(&rest)
+            doubles, doubles_ok := next_int(&rest)
+            slot, slot_ok := next_int(&rest)
             if v_ok && nonce_ok && session_ok && win_ok && ball_ok && paddle_ok && best_of_ok &&
-               win_by_two_ok && spin_ok && accel_ok && name_ok &&
+               win_by_two_ok && spin_ok && accel_ok && name_ok && doubles_ok && slot_ok &&
+               doubles >= 0 && doubles <= 1 && slot >= 1 && slot <= 3 &&
+               (doubles == 1 || slot == 2) &&
                version == PROTOCOL_VERSION && echoed_nonce == n.hello_nonce && session_id != 0 {
                 if n.session_valid && session_id != n.session_id { continue }
                 n.peer = remote
@@ -725,6 +775,9 @@ net_receive_client :: proc(n: ^Net_State, rules: ^Game_Rules, target: ^Game_Stat
                 copy_net_name(&n.remote_name, &n.remote_name_length, host_name)
                 n.packets_recv += 1
                 n.last_recv_time = rl.GetTime()
+                n.doubles = doubles == 1
+                n.assigned_slot = slot
+                rules.doubles = n.doubles
                 rules.winning_score = win
                 rules.ball_speed = ball
                 rules.paddle_speed = paddle
@@ -742,7 +795,9 @@ net_receive_client :: proc(n: ^Net_State, rules: ^Game_Rules, target: ^Game_Stat
         packet_session, session_ok := next_u32(&rest)
         if !session_ok || !session_matches(n, packet_session) { continue }
 
-        if kind == "LOBBY_STATE" {
+        if kind == "ROSTER" {
+            receive_team_roster(n, rest)
+        } else if kind == "LOBBY_STATE" {
             host_ready, h_ok := next_int(&rest)
             client_ready, c_ok := next_int(&rest)
             if h_ok && c_ok {
@@ -860,6 +915,7 @@ host_send_state_if_due :: proc(n: ^Net_State, g: Game_State) {
 }
 
 connection_interrupted :: proc(n: ^Net_State) -> bool {
+    if n.squad != nil { for &peer in n.squad^ { if connection_interrupted(&peer) { return true } } }
     return n.connected && rl.GetTime() - n.last_recv_time > CONNECTION_WARN_AFTER
 }
 
@@ -867,10 +923,14 @@ connection_grace_remaining :: proc(n: ^Net_State) -> f32 {
     if !n.connected { return 0 }
     remaining := CONNECTION_TIMEOUT - (rl.GetTime() - n.last_recv_time)
     if remaining < 0 { remaining = 0 }
+    if n.squad != nil {
+        for &peer in n.squad^ { if peer.connected { remaining = min(remaining, f64(connection_grace_remaining(&peer))) } }
+    }
     return f32(remaining)
 }
 
 connection_timed_out :: proc(n: ^Net_State) -> bool {
+    if n.squad != nil { for &peer in n.squad^ { if connection_timed_out(&peer) { return true } } }
     return n.connected && rl.GetTime() - n.last_recv_time > CONNECTION_TIMEOUT
 }
 
@@ -947,14 +1007,20 @@ parse_state :: proc(rest_value: string) -> (Game_State, u32, bool) {
     longest_rally, ok22 := next_int(&rest)
     fastest_ball, ok23 := next_f32(&rest)
     match_elapsed, ok24 := next_f32(&rest)
+    p3y, ok25 := next_f32(&rest)
+    p4y, ok26 := next_f32(&rest)
+    doubles, ok27 := next_int(&rest)
 
     if !(ok0 && ok1 && ok2 && ok3 && ok4 && ok5 && ok6 && ok7 && ok8 && ok9 && ok10 &&
          ok11 && ok12 && ok13 && ok14 && ok15 && ok16 && ok17 && ok18 && ok19 && ok20 &&
-         ok21 && ok22 && ok23 && ok24) {
+         ok21 && ok22 && ok23 && ok24 && ok25 && ok26 && ok27 && doubles >= 0 && doubles <= 1) {
         return Game_State{}, 0, false
     }
 
     return Game_State{
+        doubles = doubles == 1,
+        p3_y = p3y,
+        p4_y = p4y,
         ball_x = bx,
         ball_y = by,
         ball_vx = bvx,

@@ -20,3 +20,5 @@ android/gradlew.bat
 # Offline visual review outputs
 /pong-review.exe
 /review-*.png
+
+/pong-tests.exe

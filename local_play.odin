@@ -7,6 +7,7 @@ Match_Mode :: enum {
     Online,
     Vs_CPU,
     Local_2P,
+    Local_Doubles,
 }
 
 CPU_Difficulty :: enum {
@@ -16,9 +17,8 @@ CPU_Difficulty :: enum {
 }
 
 CPU_AI :: struct {
-    think_timer: f32,
-    target_y:    f32,
-    aim_cycle:   int,
+    target_y: f32,
+    velocity: f32,
 }
 
 cpu_difficulty_name :: proc(difficulty: CPU_Difficulty) -> string {
@@ -53,99 +53,50 @@ reset_cpu_ai :: proc(ai: ^CPU_AI) {
     ai.target_y = FIELD_H * 0.5
 }
 
-// Predict where the ball will cross the CPU paddle's x position, including
-// top/bottom wall reflections. The difficulty layer below deliberately adds
-// reaction delay and aim error; the paddle itself never exceeds Game_Rules.
-cpu_predicted_intercept_y :: proc(g: ^Game_State) -> f32 {
-    if g.ball_vx <= 1 {
-        return FIELD_H * 0.5
-    }
-
-    travel_x := (P2_X - BALL_RADIUS) - g.ball_x
-    if travel_x <= 0 {
-        return g.ball_y
-    }
-
-    t := travel_x / g.ball_vx
-    y := g.ball_y + g.ball_vy * t
-    low := BALL_RADIUS
-    high := FIELD_H - BALL_RADIUS
-
-    // A Pong flight cannot realistically require many reflections, but the
-    // fixed cap makes malformed/extreme custom speeds harmless too.
-    for _ in 0..<24 {
-        if y < low {
-            y = low + (low - y)
-            continue
-        }
-        if y > high {
-            y = high - (y - high)
-            continue
-        }
-        break
-    }
-    return math.clamp(y, low, high)
+// Predict the landing position from the current velocity without angle error.
+cpu_path_landing :: proc(x, y, vx, vy: f32) -> f32 {
+    if vx <= 0 { return FIELD_H / 2 }
+    travel_time := max(f32(0), (P2_X - BALL_RADIUS - x) / vx)
+    unfolded := y - BALL_RADIUS + vy * travel_time
+    span := FIELD_H - BALL_RADIUS * 2
+    wrapped := unfolded - math.floor(unfolded / (span * 2)) * (span * 2)
+    if wrapped > span { wrapped = span * 2 - wrapped }
+    return BALL_RADIUS + wrapped
 }
 
-cpu_paddle_direction :: proc(ai: ^CPU_AI, g: ^Game_State, difficulty: CPU_Difficulty, dt: f32) -> f32 {
-    reaction: f32 = 0.13
-    dead_zone: f32 = 22
-    error_amount: f32 = 24
-
-    switch difficulty {
-    case .Easy:
-        reaction = 0.27
-        dead_zone = 35
-        error_amount = 58
-    case .Normal:
-        reaction = 0.13
-        dead_zone = 22
-        error_amount = 24
-    case .Hard:
-        reaction = 0.065
-        dead_zone = 12
-        error_amount = 8
-    }
-
-    ai.think_timer -= dt
-    if ai.think_timer <= 0 {
-        ai.think_timer = reaction
-        ai.aim_cycle = (ai.aim_cycle + 1) % 6
-
-        target := FIELD_H * 0.5
-        if g.ball_vx > 0 && g.countdown_timer <= 0 && g.serve_timer <= 0 {
-            target = cpu_predicted_intercept_y(g)
-        }
-
-        // Deterministic aim error: difficulty is repeatable and does not need
-        // a separate RNG stream that could interfere with networking IDs.
-        error_factor: f32 = 0
-        if ai.aim_cycle == 0 {
-            error_factor = -1.0
-        } else if ai.aim_cycle == 1 {
-            error_factor = 0.45
-        } else if ai.aim_cycle == 2 {
-            error_factor = -0.30
-        } else if ai.aim_cycle == 3 {
-            error_factor = 0.85
-        } else if ai.aim_cycle == 4 {
-            error_factor = -0.60
-        } else {
-            error_factor = 0.20
-        }
-        target += error_factor * error_amount
-        ai.target_y = math.clamp(target, BALL_RADIUS, FIELD_H - BALL_RADIUS)
-    }
-
-    paddle_center := g.p2_y + PADDLE_H * 0.5
-    delta := ai.target_y - paddle_center
-    if math.abs(delta) <= dead_zone {
+cpu_paddle_direction :: proc(ai: ^CPU_AI, g: ^Game_State, difficulty: CPU_Difficulty, dt: f32, slot: int = 2, paddle_speed: f32 = 430) -> f32 {
+    if g.game_over || g.countdown_timer > 0 || g.serve_timer > 0 || g.between_games_timer > 0 {
+        reset_cpu_ai(ai)
         return 0
     }
-    if delta < 0 {
-        return -1
+    if dt <= 0 { return 0 }
+    low := PADDLE_H / 2
+    high := FIELD_H - PADDLE_H / 2
+    if g.doubles {
+        if slot == 3 { low += FIELD_H / 2 } else { high -= FIELD_H / 2 }
     }
-    return 1
+    if g.ball_vx > 0 {
+        ai.target_y = math.clamp(cpu_path_landing(g.ball_x, g.ball_y, g.ball_vx, g.ball_vy), low, high)
+    } else {
+        ai.target_y = (low + high) / 2
+    }
+    delta := ai.target_y - (paddle_position(g, slot)^ + PADDLE_H / 2)
+    profile := cpu_movement_profile(difficulty)
+    cap := paddle_speed * profile.speed_fraction
+    acceleration := cap / profile.acceleration_time
+    braking := cap / profile.braking_time
+    // A stopping-distance controller brakes toward the target instead of
+    // intentionally overshooting it. A new shot can still demand an impossible reversal.
+    safe_speed := math.sqrt(2 * braking * max(f32(0), math.abs(delta) - 2))
+    desired := min(cap, safe_speed)
+    if delta < 0 { desired = -desired }
+    rate := acceleration
+    if ai.velocity * desired < 0 || math.abs(desired) < math.abs(ai.velocity) { rate = braking }
+    ai.velocity += math.clamp(desired - ai.velocity, -rate * dt, rate * dt)
+    y := paddle_position(g, slot)^
+    if (y <= low - PADDLE_H/2 && ai.velocity < 0) || (y >= high - PADDLE_H/2 && ai.velocity > 0) { ai.velocity = 0 }
+    if paddle_speed <= 0 { return 0 }
+    return math.clamp(ai.velocity / paddle_speed, -profile.speed_fraction, profile.speed_fraction)
 }
 
 input_gamepad_direction_for :: proc(gamepad: i32) -> f32 {
@@ -224,4 +175,21 @@ input_android_local_2p :: proc() -> (p1, p2: f32) {
         }
     }
     return
+}
+
+cpu_doubles_direction :: proc(ai: ^CPU_AI, g: ^Game_State, difficulty: CPU_Difficulty, dt: f32, slot: int, paddle_speed: f32 = 430) -> f32 {
+    return cpu_paddle_direction(ai, g, difficulty, dt, slot, paddle_speed)
+}
+
+CPU_Movement_Profile :: struct {
+    speed_fraction, acceleration_time, braking_time: f32,
+}
+
+cpu_movement_profile :: proc(difficulty: CPU_Difficulty) -> CPU_Movement_Profile {
+    switch difficulty {
+    case .Easy: return {0.62, 0.35, 0.22}
+    case .Normal: return {0.78, 0.24, 0.16}
+    case .Hard: return {0.90, 0.16, 0.11}
+    }
+    return {0.78, 0.24, 0.16}
 }
