@@ -185,6 +185,7 @@ run_game :: proc() {
     }
 
     canvas := rl.LoadRenderTexture(WINDOW_W, WINDOW_H)
+    rl.SetTextureFilter(canvas.texture, .BILINEAR)
 
     for app.running && !rl.WindowShouldClose() {
         dt := rl.GetFrameTime()
@@ -251,7 +252,7 @@ run_game :: proc() {
 
 
 main :: proc() {
-    run_game()
+    when #config(PONG_VISUAL_REVIEW, false) { run_visual_review() } else { run_game() }
 }
 
 
@@ -1123,6 +1124,7 @@ draw_mobile_control_affordance :: proc(app: ^App) {
 }
 
 draw_app :: proc(app: ^App) {
+    if app.screen != .Game { draw_atmosphere() }
     switch app.screen {
     case .Main_Menu:
         draw_main_menu(app)
@@ -1150,59 +1152,49 @@ draw_app :: proc(app: ^App) {
 }
 
 draw_main_menu :: proc(app: ^App) {
-    draw_text_centered("PONG", 70, 72, FG)
-    draw_text_centered("LOCAL + ONLINE / UDP", 151, 22, ACCENT)
-
-    if button("PLAY LOCAL", rl.Rectangle{330, 215, 300, 54}) {
+    draw_text("P / P", 52, 34, 22, ACCENT)
+    draw_text("THE ORIGINAL RIVALRY", 140, 40, 12, MUTED)
+    draw_text("LOCAL + ONLINE", 752, 40, 14, MUTED)
+    rl.DrawLine(52, 76, 908, 76, EDGE)
+    draw_text("PONG", 48, 104, 96, FG)
+    draw_text("Small court. Big energy.", 54, 210, 21, MUTED)
+    draw_showcase()
+    if menu_card("PLAY LOCAL", "Solo practice or a two-player rivalry", "01", {52, 266, 380, 82}, ACCENT) {
         app.screen = .Local_Play
         app.status_message = ""
         return
     }
-    if button("PLAY ONLINE", rl.Rectangle{330, 281, 300, 54}) {
+    if menu_card("PLAY ONLINE", "Room codes, friends, anywhere", "02", {52, 362, 380, 82}, CORAL) {
         app.match_mode = .Online
         app.screen = .Online
         app.online_status = .Idle
         app.status_message = ""
         return
     }
-    if button("SETTINGS", rl.Rectangle{330, 347, 300, 54}) {
-        app.screen = .Settings
-        return
-    }
-    if button("QUIT", rl.Rectangle{330, 413, 300, 54}) {
-        app.running = false
-    }
-
-    draw_text_centered("VS CPU, local 2-player, online room codes, LAN/direct", 488, 16, MUTED)
-    version_buf: [128]u8
-    version_text := fmt.bprintf(version_buf[:], "%s  |  protocol 5  |  discovery 1  |  rendezvous 1", APP_VERSION)
-    draw_text(version_text, 18, WINDOW_H - 24, 13, MUTED)
+    if button("SETTINGS", {52, 468, 184, 40}) { app.screen = .Settings; return }
+    if button("QUIT", {248, 468, 184, 40}) { app.running = false }
+    draw_text(APP_VERSION, 842, 492, 12, MUTED)
 }
 
 draw_local_play :: proc(app: ^App) {
-    draw_text_centered("LOCAL PLAY", 50, 48, FG)
-    draw_text_centered("Same Pong physics, no network required.", 108, 17, MUTED)
-
-    if button("VS CPU", rl.Rectangle{330, 180, 300, 58}) {
+    draw_text("CHOOSE YOUR RIVAL", 56, 44, 14, ACCENT)
+    draw_text("Keep it local.", 52, 80, 54, FG)
+    draw_text("One court. Two sides. All you need is a worthy opponent.", 56, 148, 18, MUTED)
+    if menu_card("VS CPU", "Train your reflexes. Three difficulty levels.", "01", {56, 218, 848, 88}, ACCENT) {
         app.selected_local_mode = .Vs_CPU
         app.screen = .Local_Setup
         return
     }
-    draw_text_centered("Solo match against a fair reaction-based opponent", 246, 14, MUTED)
-
-    if button("LOCAL 2P", rl.Rectangle{330, 300, 300, 58}) {
+    if menu_card("LOCAL 2P", "Challenge a friend on this device.", "02", {56, 326, 848, 88}, CORAL) {
         app.selected_local_mode = .Local_2P
         app.screen = .Local_Setup
         return
     }
+    if button("BACK", {56, 464, 160, 44}) { app.screen = .Main_Menu }
     when PONG_ANDROID {
-        draw_text_centered("Two fingers: left half controls P1, right half controls P2", 366, 14, MUTED)
+        draw_text("P1: left half    /    P2: right half", 420, 480, 15, MUTED)
     } else {
-        draw_text_centered("P1: W/S or controller 1   |   P2: arrows or controller 2", 366, 14, MUTED)
-    }
-
-    if button("BACK", rl.Rectangle{360, 458, 240, 46}) {
-        app.screen = .Main_Menu
+        draw_text("P1: W / S    P2: arrows    Controllers welcome", 420, 480, 15, MUTED)
     }
 }
 
@@ -1252,30 +1244,31 @@ draw_local_setup :: proc(app: ^App) {
 }
 
 draw_online :: proc(app: ^App) {
-    draw_text_centered("PLAY ONLINE", 42, 48, FG)
-    draw_text_centered("Use a short room code over the Internet, or connect directly on a LAN/IP.", 104, 16, MUTED)
+    draw_text("FIND YOUR NEXT RIVAL", 56, 44, 14, CORAL)
+    draw_text("Go head to head.", 52, 80, 54, FG)
+    draw_text("Share a room code or meet on the same network.", 56, 148, 18, MUTED)
 
-    if button("HOST WITH CODE", rl.Rectangle{330, 156, 300, 56}) {
+    if menu_card("CREATE ROOM", "Invite a friend with a room code", "01", {56, 216, 414, 88}, ACCENT) {
         app.online_status = .Idle
         app.status_message = ""
         internet_reset(&app.internet)
         app.screen = .Internet_Host
         return
     }
-    if button("JOIN WITH CODE", rl.Rectangle{330, 224, 300, 56}) {
+    if menu_card("JOIN ROOM", "Have a code? Step into the arena", "02", {490, 216, 414, 88}, CORAL) {
         app.online_status = .Idle
         app.status_message = ""
         internet_reset(&app.internet)
         app.screen = .Internet_Join
         return
     }
-    if button("HOST LAN / DIRECT", rl.Rectangle{330, 312, 300, 52}) {
+    if menu_card("HOST LAN", "Start a direct network match", "03", {56, 326, 414, 88}, ACCENT) {
         app.online_status = .Idle
         app.status_message = ""
         app.screen = .Host_Setup
         return
     }
-    if button("JOIN LAN / DIRECT", rl.Rectangle{330, 376, 300, 52}) {
+    if menu_card("JOIN LAN", "Find a host on your network", "04", {490, 326, 414, 88}, CORAL) {
         app.online_status = .Idle
         app.status_message = ""
         discovery_client_shutdown(&app.discovery_client)
@@ -1287,7 +1280,7 @@ draw_online :: proc(app: ^App) {
         app.screen = .Main_Menu
     }
 
-    draw_text_centered("Room-code play uses Cloudflare STUN + HTTP rendezvous + direct UDP hole punching.", 532, 13, MUTED)
+
 }
 
 draw_internet_host :: proc(app: ^App) {
@@ -1401,11 +1394,15 @@ draw_internet_join :: proc(app: ^App) {
 }
 
 draw_settings :: proc(app: ^App) {
-    draw_text_centered("SETTINGS", 16, 38, FG)
-    draw_text_centered("Local preferences only; these do not change match rules.", 58, 15, MUTED)
-
-    text_field("Player name", &app.preferences.player_name, rl.Rectangle{500, 88, 268, 40})
-    draw_text("Shown online and in VS CPU", 500, 132, 13, MUTED)
+    draw_text("MAKE IT YOURS", 52, 28, 13, ACCENT)
+    draw_text("Settings", 52, 58, 40, FG)
+    draw_text("PROFILE", 52, 118, 13, MUTED)
+    draw_text("AUDIO", 52, 184, 13, MUTED)
+    draw_text("DISPLAY", 52, 390, 13, MUTED)
+    surface({264, 88, 524, 382}, ink(PANEL, 160))
+    draw_text("Player name", 285, 110, 21, FG)
+    text_field("", &app.preferences.player_name, rl.Rectangle{500, 98, 268, 40})
+    draw_text("Shown online and in VS CPU", 500, 143, 12, MUTED)
 
     _ = setting_row_int("Music volume", &app.preferences.music_volume, 166, 0, 100, 5)
 
@@ -1884,24 +1881,12 @@ start_joining :: proc(app: ^App) {
 draw_game_screen :: proc(app: ^App) {
     g := &app.render_game
 
-    for y := 12; y < WINDOW_H; y += 30 {
-        rl.DrawRectangle(WINDOW_W / 2 - 2, i32(y), 4, 16, rl.Color{56, 63, 78, 255})
-    }
-
-    draw_ball_trail(g)
-
-    p1_colour := FG
-    p2_colour := FG
-    if app.fx.p1_flash > 0 { p1_colour = GOOD }
-    if app.fx.p2_flash > 0 { p2_colour = GOOD }
-    rl.DrawRectangleRec(rl.Rectangle{P1_X, g.p1_y, PADDLE_W, PADDLE_H}, p1_colour)
-    rl.DrawRectangleRec(rl.Rectangle{P2_X, g.p2_y, PADDLE_W, PADDLE_H}, p2_colour)
-    rl.DrawCircleV([2]f32{g.ball_x, g.ball_y}, BALL_RADIUS, ACCENT)
-    draw_visual_fx(&app.fx)
-
-    score_buf: [128]u8
-    score_text := fmt.bprintf(score_buf[:], "%d     %d", g.score1, g.score2)
-    draw_text_centered(score_text, 28, 46, FG)
+    draw_arena()
+    surface({320, 12, 320, 82}, rl.Color{10, 22, 33, 230})
+    rl.DrawRectangle(478, 28, 2, 36, EDGE)
+    score1_buf, score2_buf: [32]u8
+    draw_text_centered_in(fmt.bprintf(score1_buf[:], "%02d", g.score1), {328, 20, 144, 50}, 44, ACCENT)
+    draw_text_centered_in(fmt.bprintf(score2_buf[:], "%02d", g.score2), {488, 20, 144, 50}, 44, CORAL)
 
     host_name := "PLAYER 1"
     client_name := "PLAYER 2"
@@ -1923,7 +1908,7 @@ draw_game_screen :: proc(app: ^App) {
 
     names_buf: [160]u8
     names := fmt.bprintf(names_buf[:], "%s  vs  %s", host_name, client_name)
-    draw_text_centered(names, 78, 16, MUTED)
+    draw_text_centered_in(names, {330, 74, 300, 18}, 13, MUTED)
     draw_match_progress(g, app.network_rules, 100)
     if app.match_mode == .Online {
         draw_connection_banner(app, 120)
@@ -1935,6 +1920,14 @@ draw_game_screen :: proc(app: ^App) {
     } else {
         draw_text("ESC: menu", WINDOW_W - 108, 14, 16, MUTED)
     }
+
+    if g.countdown_timer <= 0 && g.serve_timer <= 0 && !g.game_over { draw_ball_trail(g) }
+    draw_energy_paddle({P1_X, g.p1_y, PADDLE_W, PADDLE_H}, ACCENT, app.fx.p1_flash)
+    draw_energy_paddle({P2_X, g.p2_y, PADDLE_W, PADDLE_H}, CORAL, app.fx.p2_flash)
+    ball_colour := ACCENT
+    if g.ball_vx < 0 { ball_colour = CORAL }
+    draw_energy_ball({g.ball_x, g.ball_y}, BALL_RADIUS, ball_colour)
+    draw_visual_fx(&app.fx)
 
     if app.match_mode == .Online && app.preferences.show_net_stats {
         loss := packet_loss_percent(&app.net)
@@ -1972,7 +1965,10 @@ draw_game_screen :: proc(app: ^App) {
         countdown := "1"
         if g.countdown_timer > 2 { countdown = "3" } else if g.countdown_timer > 1 { countdown = "2" }
         rl.DrawRectangle(0, 0, WINDOW_W, WINDOW_H, rl.Color{7, 8, 12, 100})
-        draw_text_centered(countdown, 198, 108, FG)
+        rl.DrawCircleGradient({480, 270}, 130, ink(ACCENT, 35), ink(ACCENT, 0))
+        rl.DrawRing({480, 270}, 82, 85, -90, -90 + 360 * (g.countdown_timer - f32(int(g.countdown_timer))), 64, ACCENT)
+        draw_text_centered(countdown, 217, 96, FG)
+        draw_text_centered("LOCK IN", 374, 16, ACCENT)
     } else if g.go_timer > 0 {
         draw_text_centered("GO!", 216, 80, GOOD)
     } else if g.serve_timer > 0 && !g.game_over {
@@ -2107,7 +2103,8 @@ draw_pause_overlay :: proc(app: ^App) {
         return
     }
 
-    draw_text_centered("MENU", 102, 48, FG)
+    surface({240, 76, 480, 390}, PANEL)
+    draw_text_centered("TIME OUT", 102, 48, FG)
     if app.match_mode == .Online {
         draw_text_centered("The online match continues while this menu is open.", 162, 16, DANGER)
     } else {

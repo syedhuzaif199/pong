@@ -16,3 +16,7 @@ android/app/src/main/assets/
 android/gradle/
 android/gradlew
 android/gradlew.bat
+
+# Offline visual review outputs
+/pong-review.exe
+/review-*.png

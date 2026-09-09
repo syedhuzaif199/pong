@@ -7,6 +7,30 @@ A small Pong game written in Odin with raylib, with solo CPU, local 2-player, an
 > Application versions and wire-protocol versions are independent. v1.6 bumps gameplay protocol to 5 because competitive match rules and set state are synchronized; protocol-4 peers are intentionally rejected.
 
 
+## Arena visual overhaul
+
+The interface now features an animated home-screen rally, local and online mode cards,
+cyan/coral player identities, a luminous grid court, glowing paddles, tapered ball
+trails, directional hit sparks, a countdown ring, and redesigned pause/results panels.
+Shared controls use rounded surfaces, clear hover/disabled states, fitted labels,
+and clipped text inputs. All graphics are procedural raylib drawing: no new asset
+downloads or runtime dependencies are required.
+
+Build and run normally with `build.bat` and `pong.exe` on Windows. The existing
+match rules, controls, save format, and network protocols are preserved.
+
+For an offline visual review on Windows, run from the project directory:
+
+```powershell
+odin build . -out:pong-review.exe -define:RAYLIB_SHARED=true -define:PONG_VISUAL_REVIEW=true
+.\pong-review.exe
+```
+
+This renders nine `review-*.png` screenshots in a hidden window without starting
+network connections, playing audio, or reading/writing user preferences. The review
+executable and images are ignored by Git. This is a rendering smoke check; live
+multiplayer and Android device testing are separate checks.
+
 ## What's new in v1.6.0
 
 Competitive Play adds best-of match sets, win-by-two scoring, paddle spin, optional ball acceleration, multi-game match flow, and a richer match-complete summary. The host owns all competitive rules in online play and sends them during the protocol-5 handshake.

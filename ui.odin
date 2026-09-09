@@ -3,12 +3,12 @@ package main
 import "core:fmt"
 import rl "vendor:raylib"
 
-BG :: rl.Color{16, 18, 24, 255}
-PANEL :: rl.Color{27, 31, 41, 255}
-PANEL_HOVER :: rl.Color{39, 46, 60, 255}
-FG :: rl.Color{235, 239, 246, 255}
-MUTED :: rl.Color{143, 153, 170, 255}
-ACCENT :: rl.Color{106, 191, 255, 255}
+BG :: rl.Color{7, 14, 23, 255}
+PANEL :: rl.Color{17, 31, 44, 255}
+PANEL_HOVER :: rl.Color{27, 49, 63, 255}
+FG :: rl.Color{233, 245, 248, 255}
+MUTED :: rl.Color{143, 165, 181, 255}
+ACCENT :: rl.Color{89, 236, 220, 255}
 DANGER :: rl.Color{255, 111, 116, 255}
 GOOD :: rl.Color{114, 220, 151, 255}
 
@@ -263,19 +263,29 @@ button :: proc(label: string, rect: rl.Rectangle, enabled := true) -> bool {
     mouse := logical_mouse_position()
     hot := enabled && rl.CheckCollisionPointRec(mouse, rect)
     colour := PANEL
-    border := ACCENT
+    border := EDGE
     text_colour := FG
 
     if hot {
         colour = PANEL_HOVER
+        border = ACCENT
     }
     if !enabled {
         border = MUTED
         text_colour = MUTED
     }
 
-    rl.DrawRectangleRec(rect, colour)
-    rl.DrawRectangleLinesEx(rect, 1, border)
+    primary := label == "REMATCH" || label == "START MATCH" || label == "RESUME" || label == "CREATE ROOM" || label == "JOIN ROOM"
+    if primary && enabled {
+        colour = ACCENT
+        text_colour = BG
+        if hot { colour = FG }
+        border = colour
+    }
+    surface(rect, colour, border)
+    if hot && !primary {
+        rl.DrawRectangleRounded({rect.x + 1, rect.y + 10, 3, rect.height - 20}, 0.8, 6, ACCENT)
+    }
 
     buf: [512]u8
     n := len(label)
@@ -287,10 +297,12 @@ button :: proc(label: string, rect: rl.Rectangle, enabled := true) -> bool {
     }
     buf[n] = 0
     ctext := cstring(raw_data(buf[:]))
-    tw := rl.MeasureText(ctext, 22)
+    font_size: i32 = 20
+    for font_size > 10 && f32(rl.MeasureText(ctext, font_size)) > rect.width - 16 { font_size -= 1 }
+    tw := rl.MeasureText(ctext, font_size)
     tx := i32(rect.x + (rect.width - f32(tw)) * 0.5)
-    ty := i32(rect.y + (rect.height - 22) * 0.5)
-    rl.DrawText(ctext, tx, ty, 22, text_colour)
+    ty := i32(rect.y + (rect.height - f32(font_size)) * 0.5)
+    rl.DrawText(ctext, tx, ty, font_size, text_colour)
 
     clicked := hot && ui_primary_pressed()
     if clicked { request_ui_click() }
@@ -330,13 +342,14 @@ text_field :: proc(
     if enabled && (field.active || hot) {
         fill = PANEL_HOVER
     }
-    rl.DrawRectangleRec(rect, fill)
-    border := MUTED
+    border := EDGE
     if field.active && enabled {
         border = ACCENT
     }
-    rl.DrawRectangleLinesEx(rect, 1, border)
+    surface(rect, fill, border)
 
+    rl.BeginScissorMode(i32(rect.x + 8), i32(rect.y + 2), i32(rect.width - 16), i32(rect.height - 4))
+    defer rl.EndScissorMode()
     value := text_field_string(field)
     value_colour := FG
     if !enabled { value_colour = MUTED }
@@ -414,12 +427,14 @@ draw_text_centered_in :: proc(text: string, rect: rl.Rectangle, size: int, colou
     if n > 0 { copy(buf[:n], transmute([]u8)text[:n]) }
     buf[n] = 0
     ctext := cstring(raw_data(buf[:]))
-    width := rl.MeasureText(ctext, i32(size))
+    fitted := i32(size)
+    for fitted > 8 && f32(rl.MeasureText(ctext, fitted)) > rect.width - 8 { fitted -= 1 }
+    width := rl.MeasureText(ctext, fitted)
     rl.DrawText(
         ctext,
         i32(rect.x + (rect.width - f32(width)) * 0.5),
-        i32(rect.y + (rect.height - f32(size)) * 0.5),
-        i32(size),
+        i32(rect.y + (rect.height - f32(fitted)) * 0.5),
+        fitted,
         colour,
     )
 }

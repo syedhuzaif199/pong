@@ -177,6 +177,7 @@ draw_between_game_overlay :: proc(g: ^Game_State, player1_name, player2_name: st
     if g.between_games_timer <= 0 || g.game_over { return }
 
     rl.DrawRectangle(0, 0, WINDOW_W, WINDOW_H, rl.Color{7, 8, 12, 150})
+    surface({180, 142, 600, 230}, PANEL)
     winner_name := player1_name
     if g.last_game_winner == 2 { winner_name = player2_name }
 
@@ -197,6 +198,8 @@ draw_between_game_overlay :: proc(g: ^Game_State, player1_name, player2_name: st
 
 draw_match_complete_overlay :: proc(app: ^App, g: ^Game_State, player1_name, player2_name: string) {
     rl.DrawRectangle(0, 0, WINDOW_W, WINDOW_H, rl.Color{7, 8, 12, 215})
+    surface({140, 66, 680, 422}, PANEL)
+    rl.DrawRectangleRounded({400, 66, 160, 3}, 0.8, 6, ACCENT)
 
     winner_name := player1_name
     if g.winner == 2 { winner_name = player2_name }
@@ -204,7 +207,7 @@ draw_match_complete_overlay :: proc(app: ^App, g: ^Game_State, player1_name, pla
     draw_text_centered("MATCH COMPLETE", 92, 24, ACCENT)
     winner_buf: [160]u8
     winner_text := fmt.bprintf(winner_buf[:], "%s WINS", winner_name)
-    draw_text_centered(winner_text, 132, 40, FG)
+    draw_text_centered_in(winner_text, {160, 126, 640, 52}, 40, FG)
 
     result_buf: [160]u8
     result := fmt.bprintf(
